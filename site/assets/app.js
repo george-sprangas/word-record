@@ -336,11 +336,21 @@ async function startRec(id) {
   if (!wantAudio() && !SR) { recSettingsSheet('Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Διαλέξτε άλλη ρύθμιση.'); return; }
   stopPlayback();
   Rec.state = 'starting'; Rec.itemId = id; Rec.note = null;
+  Object.assign(Rec, {
+    stream: null, chunks: [], final: '', interim: '', srError: null, srErrorMsg: '', restarts: 0, srActive: false, srEndResolve: null,
+    recog: null, mr: null, mrStopped: Promise.resolve(), peak: null, muted: false,
+    single: !/\s/.test(String(it.text).trim()), t0: performance.now()
+  });
+  // Safari grants speech recognition only from inside the tap that asked for it. Awaiting
+  // getUserMedia first ends the user gesture and start() then fails with service-not-allowed,
+  // so dictation starts here, before the first await.
+  if (wantSR()) startSR();
   let stream = null;
   if (wantAudio()) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (err) {
+      abortSR();
       Rec.state = 'idle'; Rec.itemId = null;
       handleMicError(err, id);
       return;
@@ -348,11 +358,8 @@ async function startRec(id) {
   }
   if (it.audio) await deleteAudio(id);
   Object.assign(it, { audio: false, audioDur: 0, said: '', status: 'pending', doneAt: null });
-  Object.assign(Rec, {
-    stream, chunks: [], final: '', interim: '', srError: null, restarts: 0, srActive: false, srEndResolve: null,
-    recog: null, mr: null, mrStopped: Promise.resolve(), peak: null, muted: false,
-    single: !/\s/.test(String(it.text).trim()), t0: performance.now()
-  });
+  Rec.stream = stream;
+  Rec.t0 = performance.now();
   if (stream) {
     const mime = pickMime();
     try { Rec.mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { Rec.mr = new MediaRecorder(stream); }
@@ -364,7 +371,6 @@ async function startRec(id) {
   }
   Rec.state = 'recording';
   if (stream) startMeter(stream);
-  if (wantSR()) startSR();
   Rec.timer = setInterval(tick, 200);
   Rec.autoStop = setTimeout(() => { if (Rec.state === 'recording' && Rec.itemId === id) stopRec(); }, 60000);
   requestWake();
@@ -403,7 +409,7 @@ function startSR() {
   };
   r.onerror = e => {
     if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported'].includes(e.error)) {
-      Rec.srError = e.error; updateLive();
+      Rec.srError = e.error; Rec.srErrorMsg = e.message || ''; updateLive();
       if (!Rec.stream && Rec.state === 'recording') setTimeout(() => stopRec(), 30);
     }
   };
@@ -411,15 +417,22 @@ function startSR() {
     Rec.srActive = false;
     if (Rec.interim) { Rec.final = Rec.final ? Rec.final + ' ' + Rec.interim : Rec.interim; Rec.interim = ''; }
     // Single words: keep the first thing heard (fewer restart beeps on Android). Phrases: keep listening.
-    const keepGoing = Rec.state === 'recording' && !Rec.srError && Rec.restarts < 40 && !(Rec.single && Rec.final);
+    const live = Rec.state === 'recording' || Rec.state === 'starting';
+    const keepGoing = live && !Rec.srError && Rec.restarts < 40 && !(Rec.single && Rec.final);
     if (keepGoing) {
       Rec.restarts++;
-      setTimeout(() => { if (Rec.state === 'recording' && Rec.recog === r) { try { r.start(); } catch (e) {} } }, 120);
+      setTimeout(() => { if ((Rec.state === 'recording' || Rec.state === 'starting') && Rec.recog === r) { try { r.start(); } catch (e) {} } }, 120);
     } else if (Rec.srEndResolve) { const f = Rec.srEndResolve; Rec.srEndResolve = null; f(); }
     updateLive();
   };
   Rec.recog = r;
   try { r.start(); } catch (e) { Rec.srError = 'start'; }
+}
+function abortSR() {
+  const r = Rec.recog; Rec.recog = null;
+  if (!r) return;
+  try { r.onend = r.onresult = r.onerror = null; r.abort(); } catch (e) {}
+  Rec.srActive = false;
 }
 function stopSR() {
   const r = Rec.recog;
@@ -488,7 +501,7 @@ async function stopRec() {
       ? { msg: 'Η ηχογράφηση βγήκε χωρίς ήχο. Σε κάποια κινητά η υπαγόρευση παίρνει το μικρόφωνο από την ηχογράφηση. Δοκιμάστε «Μόνο υπαγόρευση» ή «Μόνο ήχος».', settings: true }
       : { msg: 'Η ηχογράφηση βγήκε χωρίς ήχο. Ελέγξτε ότι το μικρόφωνο δεν είναι σε σίγαση ή σε χρήση από άλλη εφαρμογή.', settings: false };
   } else if (Rec.srError && !text) {
-    note = { msg: srMessage(Rec.srError), settings: SETTINGS_ERR.has(Rec.srError) };
+    note = { msg: srMessage(Rec.srError) + errCode(Rec.srError, Rec.srErrorMsg), settings: SETTINGS_ERR.has(Rec.srError) };
   }
   Rec.note = note ? Object.assign(note, { item: id }) : null;
   releaseWake();
@@ -496,6 +509,11 @@ async function stopRec() {
   saveNow(); renderKeep();
   if (finePointer) { const ta = document.getElementById('said-' + id); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }
 }
+
+// The raw code travels with the advice: testers report it back and it is what tells
+// a permission problem apart from a missing language or an unreachable service.
+function errCode(err, msg) { return err ? ' [' + err + (msg ? ': ' + msg : '') + ']' : ''; }
+function hintText(err, msg) { const m = srMessage(err); return m ? m + errCode(err, msg) : ''; }
 
 function srMessage(err) {
   switch (err) {
@@ -518,7 +536,7 @@ function updateLive() {
   const cmp = document.getElementById('cmp-' + id);
   if (cmp && it) cmp.innerHTML = compareHTML(it, liveText());
   const h = document.getElementById('recHint-' + id);
-  if (h) { const m = srMessage(Rec.srError); h.textContent = m; h.hidden = !m; }
+  if (h) { const m = hintText(Rec.srError, Rec.srErrorMsg); h.textContent = m; h.hidden = !m; }
 }
 
 /* ---------- native recorder fallback ---------- */
@@ -737,7 +755,7 @@ function cardHTML(it) {
       : `<strong>Πατήστε για ηχογράφηση</strong><small>${sub}</small>`;
   }
   const note = !rec && Rec.note && Rec.note.item === it.id ? Rec.note : null;
-  const hintMsg = rec ? srMessage(Rec.srError) : (note ? note.msg : '');
+  const hintMsg = rec ? hintText(Rec.srError, Rec.srErrorMsg) : (note ? note.msg : '');
   const primary = done ? `Επόμενη λέξη ${ic('chev')}` : `${ic('check')} ${hasSaid ? 'Ολοκλήρωση' : 'Σωστό'} <span class="sub">· Επόμενο</span>`;
   return `<li class="item-card ${rec ? 'is-rec' : ''}" id="card-${it.id}">
     <div class="card-top">
@@ -882,8 +900,41 @@ function recSettingsSheet(msg) {
     <p class="sheet-sub">Τι κάνει το κόκκινο κουμπί σε αυτή τη συσκευή.</p>
     ${msg ? `<p class="hint warn">${esc(msg)}</p>` : ''}
     ${Object.keys(REC_MODES).map(k => `<button class="opt ${k === recMode ? 'sel' : ''}" data-act="set-rec-mode" data-mode="${k}" aria-pressed="${k === recMode}"><b>${esc(REC_MODES[k].label)}</b><span>${esc(REC_MODES[k].desc)}</span></button>`).join('')}
-    ${SR ? '' : '<p class="hint">Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Για υπαγόρευση χρησιμοποιήστε Chrome ή Safari.</p>'}
+    ${SR ? `<button class="btn btn-ghost" data-act="sr-test" style="width:100%;margin-top:4px">${ic('mic')} Δοκιμή υπαγόρευσης</button>
+      <p class="hint" id="srTestOut" hidden></p>
+      <p class="hint">Η δοκιμή ακούει χωρίς να ηχογραφεί, ώστε να φανεί αν φταίει η υπαγόρευση ή το μικρόφωνο.</p>`
+      : '<p class="hint">Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Για υπαγόρευση χρησιμοποιήστε Chrome ή Safari.</p>'}
     <div class="sheet-actions"><button class="btn btn-ghost" data-act="close-sheet">Κλείσιμο</button></div>`);
+}
+
+// Runs recognition alone: no getUserMedia, no MediaRecorder, started straight from the tap.
+// That separates a permission or service refusal from the microphone being taken by the recorder.
+let srTest = null;
+function runSRTest() {
+  const out = document.getElementById('srTestOut');
+  const show = (cls, txt) => { if (out) { out.hidden = false; out.className = 'hint ' + cls; out.textContent = txt; } };
+  if (srTest) { try { srTest.abort(); } catch (e) {} srTest = null; }
+  if (!SR) { show('warn', 'Αυτός ο browser δεν έχει υπαγόρευση.'); return; }
+  let r;
+  try { r = new SR(); } catch (e) { show('warn', 'Δεν ξεκίνησε: ' + ((e && e.message) || e)); return; }
+  r.lang = 'el-GR'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 5;
+  let heard = '', failed = false;
+  show('', 'Ακούω… πείτε μια λέξη στα ελληνικά.');
+  r.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = (e.results[i][0] && e.results[i][0].transcript || '').trim();
+      if (t) heard = t;
+    }
+    if (heard) show('', 'Ακούω… «' + toGreek(heard) + '»');
+  };
+  r.onerror = e => { failed = true; show('warn', srMessage(e.error) + errCode(e.error, e.message)); };
+  r.onend = () => {
+    srTest = null;
+    if (heard) show('ok', 'Η υπαγόρευση δουλεύει. Ακούστηκε: «' + toGreek(heard) + '»');
+    else if (!failed) show('warn', 'Δεν ακούστηκε τίποτα. Μιλήστε πιο κοντά στο μικρόφωνο και δοκιμάστε ξανά.');
+  };
+  srTest = r;
+  try { r.start(); } catch (e) { srTest = null; show('warn', 'Δεν ξεκίνησε: ' + ((e && e.message) || e)); }
 }
 
 function micPermissionSheet(id) {
@@ -962,6 +1013,7 @@ const actions = {
     { act: 'del-session', icon: 'trash', label: 'Διαγραφή συνεδρίας', danger: true }
   ]),
   'help': () => helpSheet(),
+  'sr-test': () => runSRTest(),
   'rec-settings': async () => { if (Rec.state === 'recording') await stopRec(); recSettingsSheet(); },
   'set-rec-mode': el => {
     recMode = el.dataset.mode; lsSet('lt-rec-mode', recMode); Rec.note = null;
