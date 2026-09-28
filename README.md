@@ -2,13 +2,16 @@
 
 A mobile-first web app for speech therapists (λογοθεραπεύτριες). For each child you build a session plan of exercises (words and phrases). During the session you record each word, Greek dictation writes down what the child said, you correct it to match exactly what was heard, and you mark it done. Easy words can be marked **Σωστό** with one tap and no recording.
 
-The UI is in Greek and dictation uses `el-GR`.
+The UI is in Greek and dictation uses `el-GR`. Dictation output is always written in Greek script: the recogniser is asked for several
+alternatives and the first Greek one wins, and anything still in latin letters is transliterated (`spiti` → `σπιτι`) so the word can be
+compared letter by letter against the target.
 
 ## Features
 
 - Children, sessions and exercise plans. Paste words one per line, or pick a ready-made list (/σ/, /ρ/, /λ/, /κ/–/γ/, phrases). A new session can copy the previous plan.
 - Per word: record, live dictation, replay, reset, done. The next word opens automatically.
-- Target vs. production comparison (omitted letters struck through, substitutions underlined).
+- Target vs. production comparison: the target word is shown next to a letter-level diff (omitted letters struck through, substitutions
+  and additions underlined). A **Μετατροπή σε ελληνικά** button converts greeklish typed into the field by hand.
 - Session progress, % correct per session, and a copyable text summary.
 - Recording modes (menu → **Ρυθμίσεις εγγραφής**): audio + dictation (default), dictation only, audio only. Use these on phones where the microphone can't do both at once.
 - Installable to the home screen (web app manifest and icons).

@@ -230,6 +230,10 @@ ol.items{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
 .diff{font-family:var(--font-word);font-size:24px;line-height:1.35;letter-spacing:.02em;overflow-wrap:anywhere}
 .diff del{color:var(--red);text-decoration:line-through;text-decoration-thickness:2px;opacity:.8}
 .diff ins{color:var(--red);text-decoration:none;background:var(--red-soft);border-bottom:2px solid var(--red);border-radius:3px;padding:0 1px}
+.cmp-row{display:flex;align-items:baseline;gap:8px}
+.cmp-tag{flex:none;min-width:48px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--faint)}
+.cmp-word{font-family:var(--font-word);font-size:24px;line-height:1.35;letter-spacing:.02em;overflow-wrap:anywhere;color:var(--muted)}
+.cmp-row .diff{flex:1 1 auto;min-width:0}
 .diff-legend{font-size:12.5px;color:var(--muted)}
 .diff-legend del,.diff-legend ins{font-family:var(--font-word);font-size:14px}
 .diff-legend del{color:var(--red);text-decoration:line-through}

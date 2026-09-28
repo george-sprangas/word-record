@@ -132,6 +132,39 @@ function diffOps(target, said) {
 }
 const diffHTML = (t, s) => diffOps(t, s).map(o => o.t === 'eq' ? esc(o.c) : o.t === 'del' ? `<del>${esc(o.c)}</del>` : `<ins>${esc(o.c)}</ins>`).join('');
 
+/* ---------- latin (greeklish) -> greek ---------- */
+// Speech services sometimes answer in latin script ("spiti", "THELO"). The target words are
+// greek, so anything latin is transliterated before it reaches the «Όπως το είπε» field.
+const hasGreek = s => /\p{Script=Greek}/u.test(String(s || ''));
+const hasLatin = s => /[A-Za-z]/.test(String(s || ''));
+// Doubles are left as doubles on purpose (κρεμμύδι, θάλασσα): the comparison is letter by letter.
+const GR_DI = {
+  th: 'θ', ch: 'χ', kh: 'χ', ph: 'φ', gh: 'γ', ps: 'ψ', ks: 'ξ',
+  ou: 'ου', ai: 'αι', ei: 'ει', oi: 'οι', au: 'αυ', eu: 'ευ',
+  mp: 'μπ', nt: 'ντ', gk: 'γκ', gg: 'γγ', ts: 'τσ', tz: 'τζ'
+};
+const GR_ONE = {
+  a: 'α', b: 'μπ', c: 'κ', d: 'δ', e: 'ε', f: 'φ', g: 'γ', h: 'η', i: 'ι', j: 'τζ', k: 'κ',
+  l: 'λ', m: 'μ', n: 'ν', o: 'ο', p: 'π', q: 'κ', r: 'ρ', s: 'σ', t: 'τ', u: 'ου',
+  v: 'β', w: 'ω', x: 'ξ', y: 'υ', z: 'ζ'
+};
+function latinToGreekWord(w) {
+  const low = w.toLowerCase();
+  let out = '';
+  for (let i = 0; i < low.length;) {
+    const two = low.slice(i, i + 2);
+    if (GR_DI[two]) { out += GR_DI[two]; i += 2; continue; }
+    const one = low[i];
+    out += Object.prototype.hasOwnProperty.call(GR_ONE, one) ? GR_ONE[one] : one;
+    i++;
+  }
+  out = out.replace(/σ$/, 'ς');
+  if (w[0] && w[0] === w[0].toUpperCase() && w[0] !== w[0].toLowerCase()) out = out.charAt(0).toUpperCase() + out.slice(1);
+  return out;
+}
+// Latin runs only: greek already in the text is left untouched.
+const toGreek = s => String(s || '').replace(/[A-Za-z]+/g, latinToGreekWord);
+
 /* ---------- dates ---------- */
 const DF = new Intl.DateTimeFormat('el-GR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const sod = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -343,15 +376,25 @@ function tick() {
   if (el) el.textContent = fmtDur((performance.now() - Rec.t0) / 1000);
 }
 
+// Greek is what we compare against, so a greek-script alternative wins over a latin one.
+function bestAlt(res) {
+  const first = (res[0] && res[0].transcript || '').trim();
+  if (!first || hasGreek(first)) return first;
+  for (let k = 1; k < res.length; k++) {
+    const t = (res[k] && res[k].transcript || '').trim();
+    if (t && hasGreek(t)) return t;
+  }
+  return first;
+}
 function startSR() {
   let r;
   try { r = new SR(); } catch (e) { Rec.srError = 'unsupported'; return; }
-  r.lang = 'el-GR'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+  r.lang = 'el-GR'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 5;
   r.onstart = () => { Rec.srActive = true; };
   r.onresult = e => {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      const res = e.results[i], t = (res[0] && res[0].transcript || '').trim();
+      const res = e.results[i], t = toGreek(bestAlt(res));
       if (res.isFinal) { if (t) Rec.final = Rec.final ? Rec.final + ' ' + t : t; }
       else if (t) interim += (interim ? ' ' : '') + t;
     }
@@ -658,7 +701,9 @@ function compareHTML(it, said) {
   said = (said || '').trim();
   if (!said) return it.status === 'done' ? `<span class="match">${ic('check')} Ειπώθηκε σωστά</span>` : '';
   if (norm(said) === norm(it.text)) return `<span class="match">${ic('check')} Ίδιο με τον στόχο</span>`;
-  return `<span class="field-label">Σύγκριση με τον στόχο</span><span class="diff">${diffHTML(it.text, said)}</span>
+  return `<span class="field-label">Σύγκριση με τον στόχο</span>
+    <span class="cmp-row"><span class="cmp-tag">Στόχος</span><span class="cmp-word" lang="el">${esc(it.text)}</span></span>
+    <span class="cmp-row"><span class="cmp-tag">Διαφορά</span><span class="diff" lang="el">${diffHTML(it.text, said)}</span></span>
     <span class="diff-legend"><del>α</del> παραλείφθηκε · <ins>α</ins> αντικατάσταση ή προσθήκη</span>`;
 }
 
@@ -706,6 +751,7 @@ function cardHTML(it) {
       <textarea id="said-${it.id}" class="said ${rec ? 'live' : ''}" rows="1" data-input="said" data-item="${it.id}" placeholder="${done ? '' : 'Αφήστε κενό αν ειπώθηκε σωστά'}" ${rec ? 'readonly' : ''} autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" lang="el" enterkeyhint="done">${esc(said)}</textarea>
       <p class="hint warn" id="recHint-${it.id}" ${hintMsg ? '' : 'hidden'}>${esc(hintMsg)}</p>
       ${note && note.settings ? '<button class="link-btn" data-act="rec-settings">Ρυθμίσεις εγγραφής</button>' : ''}
+      <button class="link-btn" data-act="to-greek" data-item="${it.id}" id="lat-${it.id}" ${!rec && hasLatin(said) ? '' : 'hidden'}>Μετατροπή σε ελληνικά</button>
       ${!rec && hasSaid && it.audio && !done ? '<p class="hint">Ακούστε την ηχογράφηση και διορθώστε το κείμενο ώστε να γράφει ακριβώς ό,τι ειπώθηκε.</p>' : ''}
     </div>
     <div class="compare" id="cmp-${it.id}">${compareHTML(it, said)}</div>
@@ -824,6 +870,7 @@ function helpSheet() {
       <li><b>Έλεγχος.</b> Διορθώνετε το κείμενο ώστε να γράφει ακριβώς την παραγωγή του παιδιού. Η σύγκριση δείχνει τι παραλείφθηκε ή αντικαταστάθηκε. Με την «Επαναφορά» ξεκινάτε νέα προσπάθεια.</li>
       <li><b>Ολοκλήρωση.</b> Το «Σωστό» κλείνει τη λέξη ακόμα και χωρίς ηχογράφηση και ανοίγει αμέσως την επόμενη. Για γρήγορο πέρασμα, πατάτε το ✓ δίπλα σε κάθε λέξη της λίστας.</li>
     </ol>
+    <div class="notice plain">${ic('info')}<div><strong>Η υπαγόρευση γράφει πάντα ελληνικά</strong><p>Αν η υπηρεσία φωνής απαντήσει με λατινικούς χαρακτήρες («spiti»), το κείμενο μετατρέπεται αυτόματα σε ελληνικά («σπιτι») ώστε να συγκρίνεται γράμμα προς γράμμα με τον στόχο. Αν γράψετε εσείς greeklish, πατήστε «Μετατροπή σε ελληνικά» κάτω από το πεδίο.</p></div></div>
     <div class="notice plain">${ic('info')}<div><strong>Η υπαγόρευση διορθώνει προς υπαρκτές λέξεις</strong><p>Αν το παιδί πει «πίτι», η υπαγόρευση μπορεί να γράψει «πίτα». Ακούτε την ηχογράφηση και διορθώνετε το κείμενο.</p></div></div>
     <div class="notice plain">${ic('info')}<div><strong>Πού πηγαίνει ο ήχος</strong><p>Οι ηχογραφήσεις και τα δεδομένα μένουν μόνο σε αυτή τη συσκευή. Η αυτόματη υπαγόρευση όμως χρησιμοποιεί την υπηρεσία φωνής του browser: στο Chrome ο ήχος της υπαγόρευσης επεξεργάζεται από την Google, στο Safari από την Apple.</p></div></div>
     <dl class="facts"><dt>Εγγραφή</dt><dd>${esc(recText)}</dd><dt>Αποθήκευση</dt><dd>${Store.isPersistent() ? 'Μόνο σε αυτή τη συσκευή' : 'Προσωρινή, μέχρι την ανανέωση'}</dd><dt>Έκδοση</dt><dd>${APP_VERSION}</dd></dl>
@@ -984,6 +1031,16 @@ const actions = {
     if (!ui.activeItemId) { const f = flatItems(session()).find(i => i.status !== 'done'); ui.activeItemId = f ? f.id : null; }
     renderKeep();
   },
+  'to-greek': el => {
+    const id = el.dataset.item, it = findItem(id); if (!it) return;
+    const ta = document.getElementById('said-' + id);
+    const v = toGreek((ta ? ta.value : it.said) || '');
+    it.said = v; saveNow();
+    if (ta) { ta.value = v; autoGrow(ta); }
+    const cmp = document.getElementById('cmp-' + id); if (cmp) cmp.innerHTML = compareHTML(it, v);
+    el.hidden = true;
+    if (it.status === 'done') updateProgress();
+  },
   'rec': el => toggleRec(el.dataset.item),
   'play': el => togglePlay(el.dataset.item),
   'reset': async el => {
@@ -1033,6 +1090,7 @@ document.addEventListener('input', e => {
     const b = document.getElementById('done-' + it.id);
     if (b && it.status !== 'done') b.innerHTML = `${ic('check')} ${el.value.trim() ? 'Ολοκλήρωση' : 'Σωστό'} <span class="sub">· Επόμενο</span>`;
     const r = document.querySelector(`[data-act="reset"][data-item="${it.id}"]`); if (r) r.disabled = !(it.audio || el.value.trim() || it.status === 'done');
+    const lat = document.getElementById('lat-' + it.id); if (lat) lat.hidden = !hasLatin(el.value);
     if (it.status === 'done') updateProgress();
   } else if (kind === 'ex-title') { const ex = findEx(el.dataset.ex); if (ex) { ex.title = el.value; save(); } }
   else if (kind === 'item-text') { const it = findItem(el.dataset.item); if (it) { it.text = el.value; save(); } }
