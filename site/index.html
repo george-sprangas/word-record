@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Λογοτετράδιο</title>
+<meta name="description" content="Πλάνο ασκήσεων λογοθεραπείας για κάθε παιδί και καταγραφή του πώς ακριβώς ειπώθηκε κάθε λέξη.">
+<meta name="theme-color" content="#F3F5FA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#10142A" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Λογοτετράδιο">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Commissioner:wght@400;500;600;700&family=Didact+Gothic&display=swap">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header class="topbar"><div class="topbar-in" id="top"></div></header>
+<main class="wrap" id="view"></main>
+<div id="sheetRoot" hidden></div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<input type="file" id="nativeRecInput" class="vh" accept="audio/*,video/*" capture tabindex="-1" aria-hidden="true">
+<noscript><p style="padding:16px">Η εφαρμογή χρειάζεται JavaScript.</p></noscript>
+<script src="assets/app.js" defer></script>
+</body>
+</html>
