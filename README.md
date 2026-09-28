@@ -49,8 +49,14 @@ On some Android phones, speech recognition and recording can't use the microphon
 
 Safari grants speech recognition only from inside the user gesture that asked for it, so `startRec` calls `startSR()` before it awaits
 `getUserMedia` — awaiting first ends the gesture and `start()` then fails with `service-not-allowed` even when Dictation is enabled.
-Dictation errors are shown with the browser's own error code, and **Ρυθμίσεις εγγραφής → Δοκιμή υπαγόρευσης** runs recognition without
-the recorder to tell a permission problem apart from the microphone being busy.
+
+**On iPhone and iPad, dictation and recording cannot share the microphone at all.** iOS gives the audio session to one consumer, so
+**Ήχος και υπαγόρευση** can only ever deliver one of the two there: use **Μόνο υπαγόρευση** for automatic text, or **Μόνο ήχος** to keep
+the clip and type. The app detects iOS, says so on the failing word, and offers a one-tap switch.
+
+Dictation errors carry the browser's own error code. **Ρυθμίσεις εγγραφής → Δοκιμή υπαγόρευσης** runs recognition on its own, with no
+recorder, to tell the causes apart: if it fails for `el-GR` but works with the device language, Greek is missing from Settings → General →
+Keyboard → Dictation Languages. **Αντιγραφή στοιχείων για αναφορά** copies the user agent, mode and every error code for a bug report.
 
 Inside a sandboxed frame (for example a claude.ai artifact), the microphone is blocked. The app then falls back to the phone's camera or recorder app plus keyboard dictation.
 

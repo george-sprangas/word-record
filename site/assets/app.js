@@ -225,6 +225,11 @@ function seed() {
 
 /* ---------- microphone mode ---------- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const UA = navigator.userAgent || '';
+const isIOS = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// iOS hands the audio session to one consumer at a time: speech recognition and MediaRecorder
+// cannot both hold the microphone, so «Ήχος και υπαγόρευση» can only ever give one of the two.
+const noDualMic = isIOS;
 function detectMic() {
   try {
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) return 'native';
@@ -343,7 +348,7 @@ let recMode = lsGet('lt-rec-mode');
 if (!REC_MODES[recMode]) recMode = 'both';
 const wantAudio = () => recMode !== 'dictation';
 const wantSR = () => recMode !== 'audio' && !!SR;
-const SETTINGS_ERR = new Set(['audio-capture', 'unsupported', 'start']);
+const SETTINGS_ERR = new Set(['audio-capture', 'unsupported', 'start', 'service-not-allowed', 'not-allowed']);
 
 const Rec = { state: 'idle', itemId: null, note: null };
 let wakeLock = null;
@@ -565,8 +570,12 @@ function srMessage(err) {
     case 'unsupported': return 'Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Γράψτε το κείμενο ή χρησιμοποιήστε το μικρόφωνο του πληκτρολογίου.';
     case 'network': return 'Η υπαγόρευση χρειάζεται σύνδεση στο internet. Η ηχογράφηση συνεχίζεται κανονικά.';
     case 'language-not-supported': return 'Η ελληνική υπαγόρευση δεν είναι διαθέσιμη σε αυτή τη συσκευή.';
-    case 'service-not-allowed': return 'Η υπαγόρευση είναι απενεργοποιημένη στη συσκευή. Ενεργοποιήστε την από τις ρυθμίσεις πληκτρολογίου και δοκιμάστε ξανά.';
-    case 'not-allowed': return 'Ο browser δεν έδωσε άδεια για την υπαγόρευση. Επιτρέψτε το μικρόφωνο στις ρυθμίσεις του ιστότοπου και δοκιμάστε ξανά.';
+    case 'service-not-allowed':
+      if (noDualMic && wantAudio()) return 'Στο iPhone και στο iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση».';
+      return 'Η υπαγόρευση είναι απενεργοποιημένη στη συσκευή. Ενεργοποιήστε την από Ρυθμίσεις → Γενικά → Πληκτρολόγιο → Υπαγόρευση, βεβαιωθείτε ότι στις «Γλώσσες υπαγόρευσης» υπάρχουν τα Ελληνικά, και δοκιμάστε ξανά.';
+    case 'not-allowed':
+      if (noDualMic && wantAudio()) return 'Στο iPhone και στο iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση».';
+      return 'Ο browser δεν έδωσε άδεια για την υπαγόρευση. Επιτρέψτε το μικρόφωνο στις ρυθμίσεις του ιστότοπου και δοκιμάστε ξανά.';
     case 'audio-capture': return 'Η υπαγόρευση δεν βρήκε ελεύθερο μικρόφωνο. Σε κάποια κινητά δεν δουλεύει μαζί με την ηχογράφηση: δοκιμάστε «Μόνο υπαγόρευση».';
     default: return 'Η υπαγόρευση δεν ξεκίνησε σε αυτή τη συσκευή. Γράψτε το κείμενο ή χρησιμοποιήστε το μικρόφωνο του πληκτρολογίου.';
   }
@@ -827,7 +836,9 @@ function cardHTML(it) {
       <label class="field-label" for="said-${it.id}">Όπως το είπε</label>
       <textarea id="said-${it.id}" class="said ${rec ? 'live' : ''}" rows="1" data-input="said" data-item="${it.id}" placeholder="${done ? '' : 'Αφήστε κενό αν ειπώθηκε σωστά'}" ${rec ? 'readonly' : ''} autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" lang="el" enterkeyhint="done">${esc(said)}</textarea>
       <p class="hint warn" id="recHint-${it.id}" ${hintMsg ? '' : 'hidden'}>${esc(hintMsg)}</p>
-      ${note && note.settings ? '<button class="link-btn" data-act="rec-settings">Ρυθμίσεις εγγραφής</button>' : ''}
+      ${note && note.settings ? (noDualMic && wantAudio()
+        ? '<button class="link-btn" data-act="use-dictation">Αλλαγή σε «Μόνο υπαγόρευση»</button>'
+        : '<button class="link-btn" data-act="rec-settings">Ρυθμίσεις εγγραφής</button>') : ''}
       <button class="link-btn" data-act="to-greek" data-item="${it.id}" id="lat-${it.id}" ${!rec && hasLatin(said) ? '' : 'hidden'}>Μετατροπή σε ελληνικά</button>
       ${!rec && hasSaid && it.audio && !done ? '<p class="hint">Ακούστε την ηχογράφηση και διορθώστε το κείμενο ώστε να γράφει ακριβώς ό,τι ειπώθηκε.</p>' : ''}
     </div>
@@ -961,7 +972,11 @@ function recSettingsSheet(msg) {
     ${Object.keys(REC_MODES).map(k => `<button class="opt ${k === recMode ? 'sel' : ''}" data-act="set-rec-mode" data-mode="${k}" aria-pressed="${k === recMode}"><b>${esc(REC_MODES[k].label)}</b><span>${esc(REC_MODES[k].desc)}</span></button>`).join('')}
     ${SR ? `<button class="btn btn-ghost" data-act="sr-test" style="width:100%;margin-top:4px">${ic('mic')} Δοκιμή υπαγόρευσης</button>
       <p class="hint" id="srTestOut" hidden></p>
-      <p class="hint">Η δοκιμή ακούει χωρίς να ηχογραφεί, ώστε να φανεί αν φταίει η υπαγόρευση ή το μικρόφωνο.</p>`
+      <button class="link-btn" data-act="sr-test-any" id="srTestMore" hidden>Δοκιμή με τη γλώσσα της συσκευής</button>
+      <p class="hint">Η δοκιμή ακούει χωρίς να ηχογραφεί, ώστε να φανεί αν φταίει η υπαγόρευση ή το μικρόφωνο.</p>
+      ${noDualMic ? '<p class="hint warn">Σε iPhone και iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση» ή «Μόνο ήχος».</p>' : ''}
+      <button class="link-btn" data-act="copy-diag">Αντιγραφή στοιχείων για αναφορά</button>
+      <textarea id="diagText" class="vh" readonly tabindex="-1" aria-hidden="true"></textarea>`
       : '<p class="hint">Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Για υπαγόρευση χρησιμοποιήστε Chrome ή Safari.</p>'}
     <div class="sheet-actions"><button class="btn btn-ghost" data-act="close-sheet">Κλείσιμο</button></div>`);
 }
@@ -969,16 +984,35 @@ function recSettingsSheet(msg) {
 // Runs recognition alone: no getUserMedia, no MediaRecorder, started straight from the tap.
 // That separates a permission or service refusal from the microphone being taken by the recorder.
 let srTest = null;
-function runSRTest() {
+const diagLog = [];
+function diagReport() {
+  return [
+    'Λογοτετράδιο ' + APP_VERSION,
+    'UA: ' + UA,
+    'iOS: ' + isIOS + ' · SR: ' + (SR ? 'yes' : 'no') + ' · mic: ' + micMode + ' · mode: ' + recMode,
+    'secure: ' + window.isSecureContext + ' · online: ' + navigator.onLine + ' · lang: ' + (navigator.language || '?'),
+    'last recording error: ' + (Rec.srError || '-') + (Rec.srErrorMsg ? ' (' + Rec.srErrorMsg + ')' : '')
+  ].concat(diagLog.length ? diagLog : ['(καμία δοκιμή)']).join('\n');
+}
+
+// Recognition on its own: no getUserMedia, no MediaRecorder, started straight from the tap.
+// Greek first; if only Greek fails, the language is missing from the device rather than the
+// service being blocked, which is a different fix.
+function runSRTest(lang) {
   const out = document.getElementById('srTestOut');
+  const more = document.getElementById('srTestMore');
   const show = (cls, txt) => { if (out) { out.hidden = false; out.className = 'hint ' + cls; out.textContent = txt; } };
+  const offerFallback = on => { if (more) more.hidden = !on; };
   if (srTest) { try { srTest.abort(); } catch (e) {} srTest = null; }
   if (!SR) { show('warn', 'Αυτός ο browser δεν έχει υπαγόρευση.'); return; }
   let r;
   try { r = new SR(); } catch (e) { show('warn', 'Δεν ξεκίνησε: ' + ((e && e.message) || e)); return; }
-  r.lang = 'el-GR'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 5;
+  const greek = !lang;
+  r.lang = lang || 'el-GR';
+  r.interimResults = true; r.continuous = false; r.maxAlternatives = 5;
   let heard = '', failed = false;
-  show('', 'Ακούω… πείτε μια λέξη στα ελληνικά.');
+  offerFallback(false);
+  show('', greek ? 'Ακούω… πείτε μια λέξη στα ελληνικά.' : 'Ακούω… πείτε μια λέξη στη γλώσσα της συσκευής.');
   r.onresult = e => {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = (e.results[i][0] && e.results[i][0].transcript || '').trim();
@@ -986,14 +1020,27 @@ function runSRTest() {
     }
     if (heard) show('', 'Ακούω… «' + toGreek(heard) + '»');
   };
-  r.onerror = e => { failed = true; show('warn', srMessage(e.error) + errCode(e.error, e.message)); };
+  r.onerror = e => {
+    failed = true;
+    diagLog.push('test ' + r.lang + ': ERROR ' + e.error + (e.message ? ' — ' + e.message : ''));
+    show('warn', srMessage(e.error) + errCode(e.error, e.message));
+    if (greek) offerFallback(true);
+  };
   r.onend = () => {
     srTest = null;
-    if (heard) show('ok', 'Η υπαγόρευση δουλεύει. Ακούστηκε: «' + toGreek(heard) + '»');
-    else if (!failed) show('warn', 'Δεν ακούστηκε τίποτα. Μιλήστε πιο κοντά στο μικρόφωνο και δοκιμάστε ξανά.');
+    if (heard) {
+      diagLog.push('test ' + r.lang + ': ok "' + heard + '"');
+      show('ok', greek
+        ? 'Η υπαγόρευση δουλεύει. Ακούστηκε: «' + toGreek(heard) + '»'
+        : 'Δουλεύει στη γλώσσα της συσκευής αλλά όχι στα ελληνικά. Προσθέστε τα Ελληνικά από Ρυθμίσεις → Γενικά → Πληκτρολόγιο → Υπαγόρευση → Γλώσσες υπαγόρευσης.');
+    } else if (!failed) {
+      diagLog.push('test ' + r.lang + ': no speech');
+      show('warn', 'Δεν ακούστηκε τίποτα. Μιλήστε πιο κοντά στο μικρόφωνο και δοκιμάστε ξανά.');
+    }
   };
   srTest = r;
-  try { r.start(); } catch (e) { srTest = null; show('warn', 'Δεν ξεκίνησε: ' + ((e && e.message) || e)); }
+  try { r.start(); }
+  catch (e) { srTest = null; diagLog.push('test ' + r.lang + ': start threw ' + ((e && e.name) || e)); show('warn', 'Δεν ξεκίνησε: ' + ((e && e.message) || e)); }
 }
 
 function micPermissionSheet(id) {
@@ -1073,6 +1120,18 @@ const actions = {
   ]),
   'help': () => helpSheet(),
   'sr-test': () => runSRTest(),
+  'sr-test-any': () => runSRTest(navigator.language || 'en-US'),
+  'copy-diag': () => {
+    const ta = $('#diagText'); if (!ta) return;
+    ta.value = diagReport();
+    const fallback = () => { try { ta.classList.remove('vh'); ta.select(); const ok = document.execCommand('copy'); ta.classList.add('vh'); toast(ok ? 'Τα στοιχεία αντιγράφηκαν.' : 'Η αντιγραφή δεν επιτρέπεται εδώ.'); } catch (e) { toast('Η αντιγραφή δεν επιτρέπεται εδώ.'); } };
+    try { navigator.clipboard.writeText(ta.value).then(() => toast('Τα στοιχεία αντιγράφηκαν.'), fallback); } catch (e) { fallback(); }
+  },
+  'use-dictation': () => {
+    recMode = 'dictation'; lsSet('lt-rec-mode', recMode); Rec.note = null;
+    toast('Ρύθμιση: Μόνο υπαγόρευση. Πατήστε ξανά το κόκκινο κουμπί.', 4200);
+    renderKeep();
+  },
   'rec-settings': async () => { if (Rec.state === 'recording') await stopRec(); recSettingsSheet(); },
   'set-rec-mode': el => {
     recMode = el.dataset.mode; lsSet('lt-rec-mode', recMode); Rec.note = null;
