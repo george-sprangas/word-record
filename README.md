@@ -10,6 +10,8 @@ compared letter by letter against the target.
 
 - Children, sessions and exercise plans. Paste words one per line, or pick a ready-made list (/σ/, /ρ/, /λ/, /κ/–/γ/, phrases). A new session can copy the previous plan.
 - Per word: record, live dictation, replay, reset, done. The next word opens automatically.
+- Playback has a seek bar and a 0.5× / 0.75× / 1× speed control (pitch preserved), so you can scrub back to the moment a sound went
+  wrong and hear it slowed down. The speed is remembered across words and sessions.
 - Target vs. production comparison: the target word is shown next to a letter-level diff (omitted letters struck through, substitutions
   and additions underlined). A **Μετατροπή σε ελληνικά** button converts greeklish typed into the field by hand.
 - Session progress, % correct per session, and a copyable text summary.
@@ -44,6 +46,11 @@ python3 -m http.server 8000 -d site
 | Firefox | Yes | No. Type the text or use the keyboard's mic. |
 
 On some Android phones, speech recognition and recording can't use the microphone at the same time. The app detects a silent recording or a dictation error and suggests switching recording mode.
+
+Safari grants speech recognition only from inside the user gesture that asked for it, so `startRec` calls `startSR()` before it awaits
+`getUserMedia` — awaiting first ends the gesture and `start()` then fails with `service-not-allowed` even when Dictation is enabled.
+Dictation errors are shown with the browser's own error code, and **Ρυθμίσεις εγγραφής → Δοκιμή υπαγόρευσης** runs recognition without
+the recorder to tell a permission problem apart from the microphone being busy.
 
 Inside a sandboxed frame (for example a claude.ai artifact), the microphone is blocked. The app then falls back to the phone's camera or recorder app plus keyboard dictation.
 

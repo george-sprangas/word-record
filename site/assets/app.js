@@ -254,7 +254,28 @@ async function audioURL(id) {
 const blobToDataURL = blob => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); });
 const player = new Audio();
 let playingId = null;
+// Slower playback is for hearing how a sound was actually made, so keep the pitch.
+const PLAY_RATES = [0.5, 0.75, 1];
+let playRate = parseFloat(lsGet('lt-play-rate'));
+if (!PLAY_RATES.includes(playRate)) playRate = 1;
+let seekDrag = false, seekTimer = 0;
+function applyRate() {
+  try {
+    player.playbackRate = playRate;
+    player.preservesPitch = true;
+    if ('webkitPreservesPitch' in player) player.webkitPreservesPitch = true;
+  } catch (e) {}
+}
+// MediaRecorder blobs often report an Infinite duration, so the length measured while
+// recording is the reliable one and the element's duration is only a refinement.
+function itemDur(it) {
+  if (playingId === it.id && isFinite(player.duration) && player.duration > 0) return player.duration;
+  return it.audioDur || 0;
+}
 player.addEventListener('ended', syncPlay); player.addEventListener('pause', syncPlay); player.addEventListener('play', syncPlay);
+player.addEventListener('timeupdate', syncPlayTime);
+player.addEventListener('loadedmetadata', syncPlayTime);
+player.addEventListener('ended', () => { try { player.currentTime = 0; } catch (e) {} syncPlayTime(); });
 function syncPlay() {
   $$('[data-act="play"]').forEach(b => {
     const on = b.dataset.item === playingId && !player.paused;
@@ -262,17 +283,40 @@ function syncPlay() {
     b.setAttribute('aria-label', on ? 'Παύση' : 'Αναπαραγωγή');
   });
 }
+function syncPlayTime() {
+  if (!playingId) return;
+  const it = findItem(playingId); if (!it) return;
+  const dur = itemDur(it), cur = player.currentTime || 0;
+  const sl = document.getElementById('seek-' + playingId);
+  if (sl && !seekDrag) { if (dur && parseFloat(sl.max) !== dur) sl.max = dur; sl.value = cur; fillSeek(sl, cur, dur); }
+  const lab = document.getElementById('ptime-' + playingId);
+  if (lab) lab.textContent = fmtDur(cur) + ' / ' + fmtDur(dur);
+}
+const fillSeek = (sl, cur, dur) => { if (sl) sl.style.setProperty('--p', dur > 0 ? Math.min(1, cur / dur) : 0); };
+async function loadInto(id) {
+  if (playingId === id && player.src) return true;
+  const u = await audioURL(id);
+  if (!u) return false;
+  stopPlayback(); playingId = id; player.src = u; applyRate();
+  return true;
+}
+async function seekTo(id, t) {
+  if (!await loadInto(id)) return;
+  try { player.currentTime = t; } catch (e) {}
+  syncPlay(); syncPlayTime();
+}
 function stopPlayback() { try { player.pause(); } catch (e) {} }
 async function togglePlay(id) {
   if (playingId === id && !player.paused) { player.pause(); return; }
+  if (playingId === id && player.src) { applyRate(); try { await player.play(); return; } catch (e) {} }
   const u = await audioURL(id);
   if (!u) { toast('Η ηχογράφηση δεν βρέθηκε σε αυτή τη συσκευή.'); return; }
-  playingId = id; player.src = u;
+  playingId = id; player.src = u; applyRate();
   try { await player.play(); }
   catch (e) {
     const blob = await Store.get('audio', id);
     const d = blob ? await blobToDataURL(blob) : null;
-    if (d) { player.src = d; try { await player.play(); return; } catch (e2) {} }
+    if (d) { player.src = d; applyRate(); try { await player.play(); return; } catch (e2) {} }
     toast('Αυτή η μορφή ήχου δεν αναπαράγεται σε αυτόν τον browser.');
   }
 }
@@ -725,6 +769,21 @@ function compareHTML(it, said) {
     <span class="diff-legend"><del>α</del> παραλείφθηκε · <ins>α</ins> αντικατάσταση ή προσθήκη</span>`;
 }
 
+function playerRowHTML(it) {
+  const on = playingId === it.id && !player.paused;
+  const dur = itemDur(it), cur = playingId === it.id ? (player.currentTime || 0) : 0;
+  return `<div class="play-row">
+    <button class="play-btn" data-act="play" data-item="${it.id}" aria-label="${on ? 'Παύση' : 'Αναπαραγωγή'}">${ic(on ? 'pause' : 'play')}</button>
+    <div class="player">
+      <input type="range" class="seek" id="seek-${it.id}" data-input="seek" data-item="${it.id}" min="0" max="${dur || 1}" step="0.01" value="${cur}" style="--p:${dur > 0 ? Math.min(1, cur / dur) : 0}" aria-label="Θέση στην ηχογράφηση">
+      <div class="play-meta">
+        <span class="ptime" id="ptime-${it.id}">${fmtDur(cur)} / ${fmtDur(dur)}</span>
+        <span class="rates" role="group" aria-label="Ταχύτητα αναπαραγωγής">${PLAY_RATES.map(r => `<button data-act="rate" data-rate="${r}" class="${r === playRate ? 'sel' : ''}" aria-pressed="${r === playRate}">${r}×</button>`).join('')}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
 function recButtonHTML(it, rec) {
   if (micMode === 'native') {
     return `<label class="rec-btn" for="nativeRecInput" data-native-item="${it.id}" role="button" tabindex="0" aria-label="Ηχογράφηση με την κάμερα ή την εφαρμογή του κινητού">${ic('mic')}</label>`;
@@ -763,7 +822,7 @@ function cardHTML(it) {
       ${done ? (isCorrect(it) ? `<span class="pill ok">${ic('check')} Σωστό</span>` : '<span class="pill dev">Με απόκλιση</span>') : ''}
     </div>
     <div class="rec-row">${recButtonHTML(it, rec)}<div class="rec-info">${info}</div></div>
-    ${it.audio && !rec ? `<div class="play-row"><button class="play-btn" data-act="play" data-item="${it.id}" aria-label="Αναπαραγωγή">${ic(playingId === it.id && !player.paused ? 'pause' : 'play')}</button><span>Ηχογράφηση${it.audioDur ? ' · ' + fmtDur(it.audioDur) : ''}</span></div>` : ''}
+    ${it.audio && !rec ? playerRowHTML(it) : ''}
     <div class="field">
       <label class="field-label" for="said-${it.id}">Όπως το είπε</label>
       <textarea id="said-${it.id}" class="said ${rec ? 'live' : ''}" rows="1" data-input="said" data-item="${it.id}" placeholder="${done ? '' : 'Αφήστε κενό αν ειπώθηκε σωστά'}" ${rec ? 'readonly' : ''} autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" lang="el" enterkeyhint="done">${esc(said)}</textarea>
@@ -1095,6 +1154,14 @@ const actions = {
   },
   'rec': el => toggleRec(el.dataset.item),
   'play': el => togglePlay(el.dataset.item),
+  'rate': el => {
+    const r = parseFloat(el.dataset.rate); if (!PLAY_RATES.includes(r)) return;
+    playRate = r; lsSet('lt-play-rate', String(r)); applyRate();
+    $$('[data-act="rate"]').forEach(b => {
+      const on = parseFloat(b.dataset.rate) === r;
+      b.classList.toggle('sel', on); b.setAttribute('aria-pressed', on);
+    });
+  },
   'reset': async el => {
     const id = el.dataset.item, it = findItem(id); if (!it) return;
     stopPlayback(); if (it.audio) await deleteAudio(id);
@@ -1135,6 +1202,17 @@ document.addEventListener('input', e => {
   const el = e.target, kind = el.dataset && el.dataset.input;
   if (el.id === 'wf-words') { updateWordsCount(); return; }
   if (!kind) return;
+  if (kind === 'seek') {
+    const id = el.dataset.item, it = findItem(id); if (!it) return;
+    seekDrag = true; clearTimeout(seekTimer); seekTimer = setTimeout(() => { seekDrag = false; }, 400);
+    const t = parseFloat(el.value) || 0;
+    const lab = document.getElementById('ptime-' + id);
+    const dur = itemDur(it);
+    if (lab) lab.textContent = fmtDur(t) + ' / ' + fmtDur(dur);
+    fillSeek(el, t, dur);
+    seekTo(id, t);
+    return;
+  }
   if (kind === 'said') {
     const it = findItem(el.dataset.item); if (!it) return;
     it.said = el.value; autoGrow(el); save();
