@@ -90,7 +90,7 @@ function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 
 /* ---------- state ---------- */
 let S = { children: [], sessions: [] };
-const ui = { view: 'home', childId: null, sessionId: null, activeItemId: null, editMode: false, micNoticeDismissed: lsGet('lt-mic-notice') === '1' };
+const ui = { view: 'home', childId: null, sessionId: null, activeItemId: null, editMode: false, micNoticeDismissed: lsGet('lt-mic-notice') === '1', asrNoticeDismissed: lsGet('lt-asr-notice') === '1' };
 let saveTimer = null;
 function saveNow() { clearTimeout(saveTimer); saveTimer = null; return Store.put('kv', 'state', JSON.parse(JSON.stringify(S))); }
 function save() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 200); }
@@ -230,6 +230,10 @@ const isIOS = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === 'MacIntel' 
 // iOS hands the audio session to one consumer at a time: speech recognition and MediaRecorder
 // cannot both hold the microphone, so «Ήχος και υπαγόρευση» can only ever give one of the two.
 const noDualMic = isIOS;
+// Added to the Home Screen, iOS runs the page outside full Safari, where Apple does not
+// enable the Web Speech API at all: start() fails instantly, without a permission prompt.
+const isStandalone = !!(navigator.standalone || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches));
+const srBlocked = isIOS && isStandalone;
 function detectMic() {
   try {
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) return 'native';
@@ -345,10 +349,10 @@ function measureDuration(blob) {
 const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
 // Measured on greek single words: tiny got 1 of 4 right and base 0 of 4, while small got
 // 4 of 4. Anything below small is not worth offering as a working option.
-const ASR_MODELS = {
-  small: { label: 'Ακριβές', repo: 'onnx-community/whisper-small', mb: 238, desc: 'Το μόνο που γράφει αξιόπιστα ελληνικά. Αργεί λίγο σε κινητά.' },
-  tiny: { label: 'Γρήγορο', repo: 'onnx-community/whisper-tiny', mb: 39, desc: 'Μόνο για δοκιμή: στα ελληνικά βγάζει συχνά λάθος λέξη.' }
-};
+// Only whisper-small is reliable on greek single words (4/4 in testing, against 1/4 for tiny
+// and 0/4 for base), so there is one option rather than a choice that can be made wrongly.
+const ASR_MODEL = { repo: 'onnx-community/whisper-small', mb: 238 };
+const ASR_MODELS = { small: ASR_MODEL };
 let asrModel = lsGet('lt-asr-model') || '';
 if (!ASR_MODELS[asrModel]) asrModel = '';
 let asrPipe = null, asrPipeKey = '', asrLoading = null;
@@ -396,7 +400,7 @@ async function loadASR(onProgress) {
   asrLoading = (async () => {
     const T = await import(TRANSFORMERS_URL);
     T.env.allowLocalModels = false;
-    const repo = ASR_MODELS[asrModel].repo;
+    const repo = ASR_MODEL.repo;
     // WebGPU where it exists (Safari 26, recent Chrome); plain wasm is the fallback, and
     // GitHub Pages cannot send the COOP/COEP headers that wasm threads would need.
     const tries = await hasWebGPU()
@@ -510,7 +514,9 @@ const REC_MODES = {
   audio: { label: 'Μόνο ήχος', desc: 'Κρατά μόνο την ηχογράφηση. Το κείμενο το γράφετε ή το υπαγορεύετε με το πληκτρολόγιο.' }
 };
 let recMode = lsGet('lt-rec-mode');
-if (!REC_MODES[recMode]) recMode = 'both';
+// On iPhone and iPad the microphone cannot be shared, and from the Home Screen there is no
+// Web Speech at all, so live dictation is never the right default there.
+if (!REC_MODES[recMode]) recMode = (isIOS ? 'audio' : 'both');
 const wantAudio = () => recMode !== 'dictation';
 const wantSR = () => recMode !== 'audio' && !!SR;
 const SETTINGS_ERR = new Set(['audio-capture', 'unsupported', 'start', 'service-not-allowed', 'not-allowed']);
@@ -738,6 +744,7 @@ function srMessage(err) {
     case 'network': return 'Η υπαγόρευση χρειάζεται σύνδεση στο internet. Η ηχογράφηση συνεχίζεται κανονικά.';
     case 'language-not-supported': return 'Η ελληνική υπαγόρευση δεν είναι διαθέσιμη σε αυτή τη συσκευή.';
     case 'service-not-allowed':
+      if (srBlocked) return 'Η εφαρμογή άνοιξε από την οθόνη αφετηρίας, όπου το iOS δεν επιτρέπει αυτόματη υπαγόρευση. Ανοίξτε τη διεύθυνση μέσα από το Safari, ή αφήστε την τοπική απομαγνητοφώνηση να γράψει το κείμενο από την ηχογράφηση.';
       if (noDualMic && wantAudio()) return 'Στο iPhone και στο iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση».';
       return 'Η υπαγόρευση είναι απενεργοποιημένη στη συσκευή. Ενεργοποιήστε την από Ρυθμίσεις → Γενικά → Πληκτρολόγιο → Υπαγόρευση, βεβαιωθείτε ότι στις «Γλώσσες υπαγόρευσης» υπάρχουν τα Ελληνικά, και δοκιμάστε ξανά.';
     case 'not-allowed':
@@ -884,6 +891,14 @@ function micNotice() {
     <button class="icon-btn sm" data-act="dismiss-mic" aria-label="Απόκρυψη">${ic('close')}</button></div>`;
 }
 
+function asrNotice() {
+  if (!isIOS || asrModel || ui.asrNoticeDismissed) return '';
+  return `<div class="notice">${ic('wave')}<div><strong>Αυτόματο κείμενο στο iPhone</strong>
+    <p>Το iPhone δεν δίνει το μικρόφωνο στην υπαγόρευση όσο ηχογραφεί. Η εφαρμογή μπορεί να γράφει το κείμενο από την ηχογράφηση, μέσα στη συσκευή. Λήψη ${ASR_MODEL.mb} MB μία φορά.</p>
+    <button class="link-btn" data-act="enable-asr">Ενεργοποίηση</button></div>
+    <button class="icon-btn sm" data-act="dismiss-asr" aria-label="Απόκρυψη">${ic('close')}</button></div>`;
+}
+
 function viewSession() {
   const s = session(), st = stats(s);
   if (ui.activeItemId && !flatItems(s).some(i => i.id === ui.activeItemId)) ui.activeItemId = null;
@@ -891,6 +906,7 @@ function viewSession() {
   return `<div class="stack">
     <div class="progress" id="progress">${progressHTML(s)}</div>
     ${micNotice()}
+    ${asrNotice()}
     ${ui.editMode
       ? `<div class="edit-banner"><span>Επεξεργασία πλάνου</span><button class="btn btn-primary" data-act="edit-off">Τέλος</button></div>`
       : `<div class="toolbar"><button class="btn btn-ghost" data-act="edit-on">${ic('edit')} Επεξεργασία πλάνου</button><button class="btn btn-ghost" data-act="summary">${ic('list')} Σύνοψη</button></div>`}
@@ -1146,9 +1162,9 @@ function recSettingsSheet(msg) {
       ${noDualMic ? '<p class="hint warn">Σε iPhone και iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση» ή «Μόνο ήχος».</p>' : ''}
       <h3 class="sheet-sub" style="margin:18px 0 2px;font-weight:700;color:var(--ink)">Τοπική απομαγνητοφώνηση</h3>
       <p class="hint" style="margin-bottom:8px">Γράφει το κείμενο από την αποθηκευμένη ηχογράφηση, μέσα στη συσκευή. Δουλεύει και σε iPhone μαζί με τον ήχο, γιατί δεν χρειάζεται το μικρόφωνο. Το μοντέλο κατεβαίνει μία φορά και μένει στον browser.</p>
-      <button class="opt ${asrModel ? '' : 'sel'}" data-act="set-asr-model" data-model="" aria-pressed="${!asrModel}"><b>Ανενεργή</b><span>Μόνο η υπαγόρευση του browser.</span></button>
-      ${Object.keys(ASR_MODELS).map(k => `<button class="opt ${k === asrModel ? 'sel' : ''}" data-act="set-asr-model" data-model="${k}" aria-pressed="${k === asrModel}"><b>${esc(ASR_MODELS[k].label)} μοντέλο</b><span>Λήψη ${ASR_MODELS[k].mb} MB μία φορά. ${esc(ASR_MODELS[k].desc)}</span></button>`).join('')}
-      <p class="hint">Η αυτόματη απομαγνητοφώνηση διορθώνει προς υπαρκτές λέξεις, όπως και η υπαγόρευση. Ακούτε πάντα την ηχογράφηση και διορθώνετε.</p>
+      <button class="opt ${asrModel ? '' : 'sel'}" data-act="set-asr-model" data-model="" aria-pressed="${!asrModel}"><b>Ανενεργή</b><span>Το κείμενο το γράφετε εσείς.</span></button>
+      <button class="opt ${asrModel ? 'sel' : ''}" data-act="set-asr-model" data-model="small" aria-pressed="${!!asrModel}"><b>Ενεργή</b><span>Λήψη ${ASR_MODEL.mb} MB μία φορά, μετά δουλεύει χωρίς internet.</span></button>
+      <p class="hint">Γράφει κι αυτή προς υπαρκτές λέξεις, όπως η υπαγόρευση. Ακούτε πάντα την ηχογράφηση και διορθώνετε.</p>
       <button class="link-btn" data-act="copy-diag">Αντιγραφή στοιχείων για αναφορά</button>
       <textarea id="diagText" class="vh" readonly tabindex="-1" aria-hidden="true"></textarea>`
       : '<p class="hint">Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Για υπαγόρευση χρησιμοποιήστε Chrome ή Safari.</p>'}
@@ -1363,6 +1379,13 @@ const actions = {
     const fallback = () => { try { ta.classList.remove('vh'); ta.select(); const ok = document.execCommand('copy'); ta.classList.add('vh'); toast(ok ? 'Η σύνοψη αντιγράφηκε.' : 'Η αντιγραφή δεν επιτρέπεται εδώ.'); } catch (e) { toast('Η αντιγραφή δεν επιτρέπεται εδώ.'); } };
     try { navigator.clipboard.writeText(text).then(() => toast('Η σύνοψη αντιγράφηκε.'), fallback); } catch (e) { fallback(); }
   },
+  'enable-asr': () => {
+    asrModel = 'small'; lsSet('lt-asr-model', asrModel);
+    ui.asrNoticeDismissed = true; lsSet('lt-asr-notice', '1');
+    toast('Ενεργό. Το μοντέλο κατεβαίνει την πρώτη φορά που θα ηχογραφήσετε.', 4600);
+    renderKeep();
+  },
+  'dismiss-asr': () => { ui.asrNoticeDismissed = true; lsSet('lt-asr-notice', '1'); renderKeep(); },
   'dismiss-mic': () => { ui.micNoticeDismissed = true; lsSet('lt-mic-notice', '1'); renderKeep(); },
   'activate': async el => {
     const id = el.dataset.item;

@@ -50,6 +50,16 @@ On some Android phones, speech recognition and recording can't use the microphon
 Safari grants speech recognition only from inside the user gesture that asked for it, so `startRec` calls `startSR()` before it awaits
 `getUserMedia` — awaiting first ends the gesture and `start()` then fails with `service-not-allowed` even when Dictation is enabled.
 
+**iPhone and iPad get a different default.** Two separate iOS limits rule out live dictation there, so `recMode` defaults to **Μόνο
+ήχος** on iOS and the session offers to switch on local transcription instead:
+
+1. iOS gives the audio session to one consumer, so dictation and `MediaRecorder` can never both hold the microphone.
+2. Added to the Home Screen, the page runs outside full Safari, and [Apple does not enable the Web Speech API there][ios-speech] —
+   `start()` fails instantly with `service-not-allowed` and no permission prompt. The app detects this (`navigator.standalone` /
+   `display-mode: standalone`) and says to open the address in Safari instead.
+
+[ios-speech]: https://www.technetexperts.com/ios-safari-web-speech-api-bug-fix/
+
 **On iPhone and iPad, dictation and recording cannot share the microphone at all.** iOS gives the audio session to one consumer, so
 **Ήχος και υπαγόρευση** can only ever deliver one of the two there: use **Μόνο υπαγόρευση** for automatic text, or **Μόνο ήχος** to keep
 the clip and type. The app detects iOS, says so on the failing word, and offers a one-tap switch.
