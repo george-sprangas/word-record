@@ -54,6 +54,30 @@ Safari grants speech recognition only from inside the user gesture that asked fo
 **Ήχος και υπαγόρευση** can only ever deliver one of the two there: use **Μόνο υπαγόρευση** for automatic text, or **Μόνο ήχος** to keep
 the clip and type. The app detects iOS, says so on the failing word, and offers a one-tap switch.
 
+### On-device transcription (Whisper)
+
+**Ρυθμίσεις εγγραφής → Τοπική απομαγνητοφώνηση** transcribes the *saved* clip instead of the live microphone, which is how the iPhone
+gets audio and text together: it never asks for the mic, so there is nothing to contend with. It runs [transformers.js] entirely in the
+browser, so unlike the browser's own dictation the audio never leaves the device. The model is fetched from the CDN on first use and
+cached; it needs one online session to download and works offline after that.
+
+Measured on Greek single words spoken by a TTS voice (4 words: σπίτι, σκύλος, λεμόνι, "ο σκύλος τρέχει"), single-threaded WASM on an
+M-series Mac:
+
+| model | download | correct | per word |
+|---|---|---|---|
+| `whisper-tiny` | 39 MB | 1/4 | ~0.9 s |
+| `whisper-base` | 73 MB | 0/4 | ~2.0 s |
+| `whisper-small` | 238 MB | 4/4 | ~7.4 s |
+
+Only `small` is reliable for Greek, so those are the two options offered: **Ακριβές** (small) and **Γρήγορο** (tiny, labelled as
+test-only). `base` was dropped — it cost twice tiny's download and did no better. A phone will be slower than these numbers unless
+WebGPU is available (Safari 26 has it); the app probes `requestAdapter()` rather than trusting `navigator.gpu`, because the API can be
+present with no adapter behind it, and asking for a WebGPU pipeline then hangs instead of throwing. GitHub Pages cannot send the
+COOP/COEP headers that WASM threads need, so the fallback is single-threaded.
+
+[transformers.js]: https://github.com/huggingface/transformers.js
+
 Dictation errors carry the browser's own error code. **Ρυθμίσεις εγγραφής → Δοκιμή υπαγόρευσης** runs recognition on its own, with no
 recorder, to tell the causes apart: if it fails for `el-GR` but works with the device language, Greek is missing from Settings → General →
 Keyboard → Dictation Languages. **Αντιγραφή στοιχείων για αναφορά** copies the user agent, mode and every error code for a bug report.

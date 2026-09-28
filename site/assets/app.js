@@ -338,6 +338,171 @@ function measureDuration(blob) {
   });
 }
 
+/* ---------- on-device transcription (Whisper via transformers.js) ---------- */
+// iOS hands the microphone to one consumer, so dictation while recording is impossible there.
+// Transcribing the saved clip afterwards sidesteps that entirely, and the audio never leaves
+// the device — unlike the browser's own dictation, which goes to Google or Apple.
+const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js';
+// Measured on greek single words: tiny got 1 of 4 right and base 0 of 4, while small got
+// 4 of 4. Anything below small is not worth offering as a working option.
+const ASR_MODELS = {
+  small: { label: 'Ακριβές', repo: 'onnx-community/whisper-small', mb: 238, desc: 'Το μόνο που γράφει αξιόπιστα ελληνικά. Αργεί λίγο σε κινητά.' },
+  tiny: { label: 'Γρήγορο', repo: 'onnx-community/whisper-tiny', mb: 39, desc: 'Μόνο για δοκιμή: στα ελληνικά βγάζει συχνά λάθος λέξη.' }
+};
+let asrModel = lsGet('lt-asr-model') || '';
+if (!ASR_MODELS[asrModel]) asrModel = '';
+let asrPipe = null, asrPipeKey = '', asrLoading = null;
+const asrBusy = new Set();
+
+function asrStatus(id, msg, cls) {
+  const el = document.getElementById('asr-' + id);
+  if (!el) return;
+  el.hidden = !msg;
+  el.className = 'hint' + (cls ? ' ' + cls : '');
+  el.textContent = msg || '';
+}
+
+// One combined percentage across every file the model needs, so the wait reads as one download.
+function makeProgress(id) {
+  const files = new Map();
+  let shown = 0;
+  return p => {
+    if (!p || p.status !== 'progress' || !p.total) return;
+    files.set(p.file, { loaded: p.loaded || 0, total: p.total });
+    let loaded = 0, total = 0;
+    files.forEach(f => { loaded += f.loaded; total += f.total; });
+    if (!total) return;
+    // Files appear one by one, so the raw ratio jumps backwards as new ones join.
+    const pct = Math.round(loaded / total * 100);
+    if (pct < shown) return;
+    shown = pct;
+    asrStatus(id, 'Λήψη μοντέλου… ' + pct + '%');
+  };
+}
+
+// navigator.gpu being present does not mean an adapter exists, and asking for a webgpu
+// pipeline without one hangs instead of throwing.
+let gpuOK = null;
+async function hasWebGPU() {
+  if (gpuOK !== null) return gpuOK;
+  gpuOK = false;
+  try { if (navigator.gpu) gpuOK = !!(await navigator.gpu.requestAdapter()); } catch (e) {}
+  return gpuOK;
+}
+
+async function loadASR(onProgress) {
+  if (asrPipe && asrPipeKey === asrModel) return asrPipe;
+  if (asrLoading) return asrLoading;
+  asrLoading = (async () => {
+    const T = await import(TRANSFORMERS_URL);
+    T.env.allowLocalModels = false;
+    const repo = ASR_MODELS[asrModel].repo;
+    // WebGPU where it exists (Safari 26, recent Chrome); plain wasm is the fallback, and
+    // GitHub Pages cannot send the COOP/COEP headers that wasm threads would need.
+    const tries = await hasWebGPU()
+      ? [{ device: 'webgpu', dtype: 'q4' }, { device: 'wasm', dtype: 'q8' }]
+      : [{ device: 'wasm', dtype: 'q8' }, {}];
+    let err = null;
+    for (const opts of tries) {
+      try {
+        asrPipe = await T.pipeline('automatic-speech-recognition', repo, Object.assign({ progress_callback: onProgress }, opts));
+        asrPipeKey = asrModel;
+        return asrPipe;
+      } catch (e) { err = e; }
+    }
+    throw err || new Error('pipeline failed');
+  })();
+  try { return await asrLoading; }
+  finally { asrLoading = null; }
+}
+
+// Whisper wants mono 16 kHz float samples.
+async function decodeTo16k(blob) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('no AudioContext');
+  const buf = await blob.arrayBuffer();
+  const ctx = new AC();
+  let decoded;
+  try {
+    decoded = await new Promise((res, rej) => {
+      const p = ctx.decodeAudioData(buf, res, rej);
+      if (p && p.then) p.then(res, rej);
+    });
+  } finally { try { ctx.close(); } catch (e) {} }
+  const frames = Math.ceil(decoded.duration * 16000);
+  if (!frames) throw new Error('empty audio');
+  try {
+    const OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    const off = new OC(1, frames, 16000);
+    const src = off.createBufferSource();
+    src.buffer = decoded; src.connect(off.destination); src.start();
+    return (await off.startRendering()).getChannelData(0);
+  } catch (e) {
+    // Older Safari refuses odd sample rates on OfflineAudioContext: resample by hand.
+    const ch = decoded.numberOfChannels;
+    const src = decoded.getChannelData(0);
+    const mono = new Float32Array(src.length);
+    mono.set(src);
+    for (let c = 1; c < ch; c++) { const d = decoded.getChannelData(c); for (let i = 0; i < mono.length; i++) mono[i] += d[i]; }
+    if (ch > 1) for (let i = 0; i < mono.length; i++) mono[i] /= ch;
+    const ratio = decoded.sampleRate / 16000;
+    const out = new Float32Array(frames);
+    for (let i = 0; i < frames; i++) out[i] = mono[Math.min(mono.length - 1, Math.round(i * ratio))] || 0;
+    return out;
+  }
+}
+
+const cleanASR = t => String(t || '').replace(/[\s]+/g, ' ').replace(/^[\s.,!?·"'«»-]+|[\s.,!?·"'«»-]+$/g, '').trim();
+
+async function transcribeItem(id) {
+  const it = findItem(id);
+  if (!it || !it.audio || !asrModel || asrBusy.has(id)) return;
+  asrBusy.add(id);
+  renderAsrButton(id, true);
+  try {
+    asrStatus(id, 'Προετοιμασία…');
+    const pipe = await loadASR(makeProgress(id));
+    const blob = await Store.get('audio', id);
+    if (!blob) throw new Error('no audio');
+    const t0 = Date.now();
+    const tick = setInterval(() => asrStatus(id, 'Απομαγνητοφώνηση… ' + Math.round((Date.now() - t0) / 1000) + 's'), 1000);
+    let out;
+    try {
+      asrStatus(id, 'Απομαγνητοφώνηση…');
+      const audio = await decodeTo16k(blob);
+      out = await pipe(audio, { language: 'el', task: 'transcribe', return_timestamps: false });
+    } finally { clearInterval(tick); }
+    const text = toGreek(cleanASR(out && out.text));
+    const cur = findItem(id);
+    if (!cur) return;
+    if (!text) { asrStatus(id, 'Δεν αναγνωρίστηκε ομιλία στην ηχογράφηση.', 'warn'); return; }
+    cur.said = text;
+    if (cur.status === 'done') cur.doneAt = cur.doneAt || new Date().toISOString();
+    saveNow();
+    const ta = document.getElementById('said-' + id);
+    if (ta) { ta.value = text; autoGrow(ta); }
+    const cmp = document.getElementById('cmp-' + id);
+    if (cmp) cmp.innerHTML = compareHTML(cur, text);
+    asrStatus(id, 'Γράφτηκε από την ηχογράφηση. Ακούστε την και διορθώστε αν χρειάζεται.', 'ok');
+    updateProgress();
+  } catch (e) {
+    const off = !navigator.onLine;
+    asrStatus(id, off
+      ? 'Η πρώτη λήψη του μοντέλου χρειάζεται σύνδεση στο internet.'
+      : 'Η τοπική απομαγνητοφώνηση απέτυχε σε αυτή τη συσκευή. ' + ((e && e.message) || e), 'warn');
+  } finally {
+    asrBusy.delete(id);
+    renderAsrButton(id, false);
+  }
+}
+
+function renderAsrButton(id, busy) {
+  const b = document.querySelector(`[data-act="asr"][data-item="${id}"]`);
+  if (!b) return;
+  b.disabled = !!busy;
+  b.textContent = busy ? 'Απομαγνητοφώνηση…' : 'Απομαγνητοφώνηση στη συσκευή';
+}
+
 /* ---------- live recording + dictation ---------- */
 const REC_MODES = {
   both: { label: 'Ήχος και υπαγόρευση', desc: 'Κρατά την ηχογράφηση και γράφει αυτόματα το κείμενο.' },
@@ -557,6 +722,8 @@ async function stopRec() {
   Object.assign(Rec, { state: 'idle', itemId: null, mr: null, stream: null, recog: null, chunks: [] });
   saveNow(); renderKeep();
   if (finePointer) { const ta = document.getElementById('said-' + id); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }
+  // The recorder had the microphone, so on iOS there is never dictation text to keep here.
+  if (saved && asrModel && !text) transcribeItem(id);
 }
 
 // The raw code travels with the advice: testers report it back and it is what tells
@@ -841,6 +1008,8 @@ function cardHTML(it) {
         : '<button class="link-btn" data-act="rec-settings">Ρυθμίσεις εγγραφής</button>') : ''}
       <button class="link-btn" data-act="to-greek" data-item="${it.id}" id="lat-${it.id}" ${!rec && hasLatin(said) ? '' : 'hidden'}>Μετατροπή σε ελληνικά</button>
       ${!rec && hasSaid && it.audio && !done ? '<p class="hint">Ακούστε την ηχογράφηση και διορθώστε το κείμενο ώστε να γράφει ακριβώς ό,τι ειπώθηκε.</p>' : ''}
+      ${it.audio && !rec && asrModel ? `<button class="link-btn" data-act="asr" data-item="${it.id}" ${asrBusy.has(it.id) ? 'disabled' : ''}>${asrBusy.has(it.id) ? 'Απομαγνητοφώνηση…' : 'Απομαγνητοφώνηση στη συσκευή'}</button>` : ''}
+      <p class="hint" id="asr-${it.id}" hidden></p>
     </div>
     <div class="compare" id="cmp-${it.id}">${compareHTML(it, said)}</div>
     <div class="card-actions">
@@ -975,6 +1144,11 @@ function recSettingsSheet(msg) {
       <button class="link-btn" data-act="sr-test-any" id="srTestMore" hidden>Δοκιμή με τη γλώσσα της συσκευής</button>
       <p class="hint">Η δοκιμή ακούει χωρίς να ηχογραφεί, ώστε να φανεί αν φταίει η υπαγόρευση ή το μικρόφωνο.</p>
       ${noDualMic ? '<p class="hint warn">Σε iPhone και iPad η υπαγόρευση δεν δουλεύει ταυτόχρονα με την ηχογράφηση. Διαλέξτε «Μόνο υπαγόρευση» ή «Μόνο ήχος».</p>' : ''}
+      <h3 class="sheet-sub" style="margin:18px 0 2px;font-weight:700;color:var(--ink)">Τοπική απομαγνητοφώνηση</h3>
+      <p class="hint" style="margin-bottom:8px">Γράφει το κείμενο από την αποθηκευμένη ηχογράφηση, μέσα στη συσκευή. Δουλεύει και σε iPhone μαζί με τον ήχο, γιατί δεν χρειάζεται το μικρόφωνο. Το μοντέλο κατεβαίνει μία φορά και μένει στον browser.</p>
+      <button class="opt ${asrModel ? '' : 'sel'}" data-act="set-asr-model" data-model="" aria-pressed="${!asrModel}"><b>Ανενεργή</b><span>Μόνο η υπαγόρευση του browser.</span></button>
+      ${Object.keys(ASR_MODELS).map(k => `<button class="opt ${k === asrModel ? 'sel' : ''}" data-act="set-asr-model" data-model="${k}" aria-pressed="${k === asrModel}"><b>${esc(ASR_MODELS[k].label)} μοντέλο</b><span>Λήψη ${ASR_MODELS[k].mb} MB μία φορά. ${esc(ASR_MODELS[k].desc)}</span></button>`).join('')}
+      <p class="hint">Η αυτόματη απομαγνητοφώνηση διορθώνει προς υπαρκτές λέξεις, όπως και η υπαγόρευση. Ακούτε πάντα την ηχογράφηση και διορθώνετε.</p>
       <button class="link-btn" data-act="copy-diag">Αντιγραφή στοιχείων για αναφορά</button>
       <textarea id="diagText" class="vh" readonly tabindex="-1" aria-hidden="true"></textarea>`
       : '<p class="hint">Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Για υπαγόρευση χρησιμοποιήστε Chrome ή Safari.</p>'}
@@ -991,6 +1165,7 @@ function diagReport() {
     'UA: ' + UA,
     'iOS: ' + isIOS + ' · SR: ' + (SR ? 'yes' : 'no') + ' · mic: ' + micMode + ' · mode: ' + recMode,
     'secure: ' + window.isSecureContext + ' · online: ' + navigator.onLine + ' · lang: ' + (navigator.language || '?'),
+    'local asr: ' + (asrModel || 'off') + ' · webgpu: ' + !!navigator.gpu,
     'last recording error: ' + (Rec.srError || '-') + (Rec.srErrorMsg ? ' (' + Rec.srErrorMsg + ')' : '')
   ].concat(diagLog.length ? diagLog : ['(καμία δοκιμή)']).join('\n');
 }
@@ -1200,6 +1375,15 @@ const actions = {
     it.status = 'done'; it.said = it.text; it.doneAt = new Date().toISOString(); saveNow();
     if (!ui.activeItemId) { const f = flatItems(session()).find(i => i.status !== 'done'); ui.activeItemId = f ? f.id : null; }
     renderKeep();
+  },
+  'asr': el => transcribeItem(el.dataset.item),
+  'set-asr-model': el => {
+    const m = el.dataset.model || '';
+    asrModel = ASR_MODELS[m] ? m : '';
+    lsSet('lt-asr-model', asrModel);
+    if (asrPipeKey && asrPipeKey !== asrModel) { asrPipe = null; asrPipeKey = ''; }
+    renderKeep();
+    recSettingsSheet();
   },
   'to-greek': el => {
     const id = el.dataset.item, it = findItem(id); if (!it) return;
