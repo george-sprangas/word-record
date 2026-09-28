@@ -551,22 +551,57 @@ function handleMicError(err, id) {
   micPermissionSheet(id);
 }
 
+// Recognition refusing leaves a dictation-only take with neither text nor audio, which
+// reads as «the button does nothing». There is no microphone conflict to respect any more
+// at that point, so take the mic and keep the recording instead.
+function attachRecorder(stream) {
+  const mime = pickMime();
+  try { Rec.mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { Rec.mr = new MediaRecorder(stream); }
+  Rec.mr.ondataavailable = e => { if (e.data && e.data.size) Rec.chunks.push(e.data); };
+  Rec.mrStopped = new Promise(res => { Rec.mr.onstop = res; });
+  Rec.mr.start(250);
+  const tr = stream.getAudioTracks()[0];
+  if (tr) tr.onmute = () => { Rec.muted = true; };
+}
+async function fallbackToAudio(id) {
+  if (Rec.itemId !== id || Rec.stream || !navigator.mediaDevices) return false;
+  let stream = null;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
+  catch (e) { return false; }
+  if (Rec.itemId !== id || Rec.state !== 'recording' || Rec.stream) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    return false;
+  }
+  Rec.stream = stream; Rec.fellBack = true; Rec.t0 = performance.now();
+  attachRecorder(stream);
+  startMeter(stream);
+  renderKeep();
+  return true;
+}
+async function recoverOrStop(id) {
+  const ok = await fallbackToAudio(id);
+  if (!ok && Rec.state === 'recording' && Rec.itemId === id) stopRec();
+}
+
 async function startRec(id) {
   const it = findItem(id); if (!it) return;
-  if (!wantAudio() && !SR) { recSettingsSheet('Αυτός ο browser δεν έχει αυτόματη υπαγόρευση. Διαλέξτε άλλη ρύθμιση.'); return; }
   stopPlayback();
   Rec.state = 'starting'; Rec.itemId = id; Rec.note = null;
   Object.assign(Rec, {
     stream: null, chunks: [], final: '', interim: '', srError: null, srErrorMsg: '', restarts: 0, srActive: false, srEndResolve: null,
     recog: null, mr: null, mrStopped: Promise.resolve(), peak: null, muted: false,
-    single: !/\s/.test(String(it.text).trim()), t0: performance.now()
+    single: !/\s/.test(String(it.text).trim()), t0: performance.now(), fellBack: false
   });
+  // «Μόνο υπαγόρευση» is a preference, not a guarantee. On a device with no working
+  // recognition — an iOS Home Screen app, or Firefox — keep the audio instead of refusing
+  // to start, so the red button always does something.
+  Rec.fellBack = !wantAudio() && !wantSR();
   // Safari grants speech recognition only from inside the tap that asked for it. Awaiting
   // getUserMedia first ends the user gesture and start() then fails with service-not-allowed,
   // so dictation starts here, before the first await.
   if (wantSR()) startSR();
   let stream = null;
-  if (wantAudio()) {
+  if (wantAudio() || Rec.fellBack) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (err) {
@@ -580,17 +615,12 @@ async function startRec(id) {
   Object.assign(it, { audio: false, audioDur: 0, said: '', status: 'pending', doneAt: null });
   Rec.stream = stream;
   Rec.t0 = performance.now();
-  if (stream) {
-    const mime = pickMime();
-    try { Rec.mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { Rec.mr = new MediaRecorder(stream); }
-    Rec.mr.ondataavailable = e => { if (e.data && e.data.size) Rec.chunks.push(e.data); };
-    Rec.mrStopped = new Promise(res => { Rec.mr.onstop = res; });
-    Rec.mr.start(250);
-    const tr = stream.getAudioTracks()[0];
-    if (tr) tr.onmute = () => { Rec.muted = true; };
-  }
+  if (stream) attachRecorder(stream);
   Rec.state = 'recording';
   if (stream) startMeter(stream);
+  // Recognition may already have failed while we were still starting up, and the handler
+  // could not act on a take that had not begun.
+  if (!stream && Rec.srError) recoverOrStop(id);
   Rec.timer = setInterval(tick, 200);
   Rec.autoStop = setTimeout(() => { if (Rec.state === 'recording' && Rec.itemId === id) stopRec(); }, 60000);
   requestWake();
@@ -630,7 +660,7 @@ function startSR() {
   r.onerror = e => {
     if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported'].includes(e.error)) {
       Rec.srError = e.error; Rec.srErrorMsg = e.message || ''; updateLive();
-      if (!Rec.stream && Rec.state === 'recording') setTimeout(() => stopRec(), 30);
+      if (!Rec.stream && Rec.state === 'recording') recoverOrStop(Rec.itemId);
     }
   };
   r.onend = () => {
@@ -721,7 +751,9 @@ async function stopRec() {
       ? { msg: 'Η ηχογράφηση βγήκε χωρίς ήχο. Σε κάποια κινητά η υπαγόρευση παίρνει το μικρόφωνο από την ηχογράφηση. Δοκιμάστε «Μόνο υπαγόρευση» ή «Μόνο ήχος».', settings: true }
       : { msg: 'Η ηχογράφηση βγήκε χωρίς ήχο. Ελέγξτε ότι το μικρόφωνο δεν είναι σε σίγαση ή σε χρήση από άλλη εφαρμογή.', settings: false };
   } else if (Rec.srError && !text) {
-    note = { msg: srMessage(Rec.srError) + errCode(Rec.srError, Rec.srErrorMsg), settings: SETTINGS_ERR.has(Rec.srError) };
+    note = { msg: srMessage(Rec.srError) + (saved ? ' Η ηχογράφηση κρατήθηκε.' : '') + errCode(Rec.srError, Rec.srErrorMsg), settings: SETTINGS_ERR.has(Rec.srError) };
+  } else if (Rec.fellBack) {
+    note = { msg: 'Αυτή η συσκευή δεν έχει αυτόματη υπαγόρευση, οπότε κρατήθηκε η ηχογράφηση.', settings: true };
   }
   Rec.note = note ? Object.assign(note, { item: id }) : null;
   releaseWake();
@@ -1154,7 +1186,10 @@ function recSettingsSheet(msg) {
   openSheet(`<h2 class="sheet-title">Ρυθμίσεις εγγραφής</h2>
     <p class="sheet-sub">Τι κάνει το κόκκινο κουμπί σε αυτή τη συσκευή.</p>
     ${msg ? `<p class="hint warn">${esc(msg)}</p>` : ''}
-    ${Object.keys(REC_MODES).map(k => `<button class="opt ${k === recMode ? 'sel' : ''}" data-act="set-rec-mode" data-mode="${k}" aria-pressed="${k === recMode}"><b>${esc(REC_MODES[k].label)}</b><span>${esc(REC_MODES[k].desc)}</span></button>`).join('')}
+    ${Object.keys(REC_MODES).map(k => {
+      const dead = k !== 'audio' && (!SR || srBlocked);
+      return `<button class="opt ${k === recMode && !dead ? 'sel' : ''}" data-act="set-rec-mode" data-mode="${k}" aria-pressed="${k === recMode && !dead}" ${dead ? 'disabled' : ''}><b>${esc(REC_MODES[k].label)}</b><span>${dead ? (srBlocked ? 'Δεν δουλεύει από την οθόνη αφετηρίας. Ανοίξτε τη διεύθυνση στο Safari.' : 'Δεν υποστηρίζεται σε αυτόν τον browser.') : esc(REC_MODES[k].desc)}</span></button>`;
+    }).join('')}
     ${SR ? `<button class="btn btn-ghost" data-act="sr-test" style="width:100%;margin-top:4px">${ic('mic')} Δοκιμή υπαγόρευσης</button>
       <p class="hint" id="srTestOut" hidden></p>
       <button class="link-btn" data-act="sr-test-any" id="srTestMore" hidden>Δοκιμή με τη γλώσσα της συσκευής</button>
@@ -1179,7 +1214,7 @@ function diagReport() {
   return [
     'Λογοτετράδιο ' + APP_VERSION,
     'UA: ' + UA,
-    'iOS: ' + isIOS + ' · SR: ' + (SR ? 'yes' : 'no') + ' · mic: ' + micMode + ' · mode: ' + recMode,
+    'iOS: ' + isIOS + ' · standalone: ' + isStandalone + ' · SR: ' + (SR ? 'yes' : 'no') + ' · mic: ' + micMode + ' · mode: ' + recMode,
     'secure: ' + window.isSecureContext + ' · online: ' + navigator.onLine + ' · lang: ' + (navigator.language || '?'),
     'local asr: ' + (asrModel || 'off') + ' · webgpu: ' + !!navigator.gpu,
     'last recording error: ' + (Rec.srError || '-') + (Rec.srErrorMsg ? ' (' + Rec.srErrorMsg + ')' : '')

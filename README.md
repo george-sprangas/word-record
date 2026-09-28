@@ -16,6 +16,8 @@ compared letter by letter against the target.
   and additions underlined). A **Μετατροπή σε ελληνικά** button converts greeklish typed into the field by hand.
 - Session progress, % correct per session, and a copyable text summary.
 - Recording modes (menu → **Ρυθμίσεις εγγραφής**): audio + dictation (default), dictation only, audio only. Use these on phones where the microphone can't do both at once.
+  The red button always records: if the chosen mode needs dictation and this device has none, or dictation refuses, the app takes the
+  microphone instead and keeps the audio rather than failing to start. Modes the device cannot run are disabled in the sheet.
 - Installable to the home screen (web app manifest and icons).
 - All data, including recordings, stays on the device (IndexedDB). There is no backend.
 
