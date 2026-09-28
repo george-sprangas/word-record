@@ -56,9 +56,10 @@ Safari grants speech recognition only from inside the user gesture that asked fo
 ήχος** on iOS and the session offers to switch on local transcription instead:
 
 1. iOS gives the audio session to one consumer, so dictation and `MediaRecorder` can never both hold the microphone.
-2. Added to the Home Screen, the page runs outside full Safari, and [Apple does not enable the Web Speech API there][ios-speech] —
-   `start()` fails instantly with `service-not-allowed` and no permission prompt. The app detects this (`navigator.standalone` /
-   `display-mode: standalone`) and says to open the address in Safari instead.
+2. Web Speech only works inside the Safari **app**. WebKit's own bug report states the API "is not available in SafariViewController
+   and web apps added to Home Screen", so both a Home Screen icon and a link tapped inside Messages/Mail/WhatsApp (which open an
+   in-app SafariViewController) fail instantly with `service-not-allowed: Speech recognition service permission check has failed`,
+   before any permission prompt. SafariViewController is indistinguishable from Safari at runtime, so the message names both cases.
 
 [ios-speech]: https://www.technetexperts.com/ios-safari-web-speech-api-bug-fix/
 
