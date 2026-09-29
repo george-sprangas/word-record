@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Measure what an account actually spent, from the transcripts on this machine.
+
+A subscription has no quota API. OpenTelemetry covers only sessions that were
+configured to export before they ran — which excludes every interactive session
+and everything that happened before the Hub existed. But every Claude Code
+session already writes its own token counts, per message, to a transcript under
+its config directory. This reads them and posts them to the Hub.
+
+    agentkit-usage --hub http://127.0.0.1:8002 --pool max-george
+
+The pool token comes from AGENTKIT_POOL_TOKEN. Each record carries the
+message's own id as its dedupe key, so re-running is free and the collector
+keeps no state of its own — delete nothing, remember nothing, run it as often
+as you like. Standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+BATCH = 500
+
+
+def post(url: str, token: str, body: dict, timeout: int = 60) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"{url} returned {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{url} is unreachable: {exc.reason}") from exc
+
+
+def transcripts(config_dir: Path, since: datetime | None) -> list[Path]:
+    """Every session transcript under a config directory, oldest first.
+
+    Skipping by file mtime is safe: a transcript is only ever appended to, so a
+    file untouched since the cutoff holds nothing newer than it.
+    """
+    root = config_dir.expanduser() / "projects"
+    if not root.is_dir():
+        return []
+    files = []
+    for path in root.rglob("*.jsonl"):
+        if since is not None:
+            try:
+                if datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < since:
+                    continue
+            except OSError:
+                continue
+        files.append(path)
+    return sorted(files, key=lambda p: p.name)
+
+
+def records(path: Path, since: datetime | None):
+    """The usage records in one transcript.
+
+    One per assistant message that reports usage, keyed by that message's id.
+    A message can be written more than once as a session streams, and a
+    resumed session copies earlier messages into the new transcript, so the id
+    is what stops the same tokens being counted twice.
+    """
+    project = path.parent.name
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "assistant":
+            continue
+        message = row.get("message")
+        if not isinstance(message, dict):
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        stamp = row.get("timestamp") or row.get("ts")
+        when = _parse(stamp)
+        if when is None or (since is not None and when < since):
+            continue
+        key = message.get("id") or row.get("uuid")
+        if not key:
+            continue
+        totals = (int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0),
+                  int(usage.get("cache_read_input_tokens") or 0),
+                  int(usage.get("cache_creation_input_tokens") or 0))
+        if not any(totals):
+            continue
+        yield {
+            "key": f"tx:{key}",
+            "ts": when.isoformat(),
+            "model": message.get("model") or "",
+            "input": totals[0], "output": totals[1],
+            "cache_read": totals[2], "cache_write": totals[3],
+            "session_id": row.get("sessionId") or "",
+            "project": project,
+        }
+
+
+def _parse(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def collect(config_dirs: list[Path], since: datetime | None) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for config_dir in config_dirs:
+        for path in transcripts(config_dir, since):
+            for record in records(path, since):
+                if record["key"] in seen:
+                    continue
+                seen.add(record["key"])
+                out.append(record)
+    out.sort(key=lambda r: r["ts"])
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--hub", default=os.environ.get("AGENTKIT_HUB_URL", ""))
+    parser.add_argument("--pool", default=os.environ.get("AGENTKIT_POOL_ID", ""),
+                        help="only for the message; the token names the pool")
+    parser.add_argument("--config-dir", action="append", type=Path, default=None,
+                        help="a CLAUDE_CONFIG_DIR to read (repeatable). "
+                             "Defaults to ~/.claude — the account you work in interactively.")
+    parser.add_argument("--days", type=float, default=8.0,
+                        help="how far back to read (default 8, one weekly window plus a margin)")
+    parser.add_argument("--all", action="store_true", help="read every transcript, however old")
+    parser.add_argument("--watch", type=float, metavar="SECONDS",
+                        help="keep running, re-reading this often")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    token = os.environ.get("AGENTKIT_POOL_TOKEN", "")
+    if not args.dry_run and (not args.hub or not token):
+        print("set --hub (or AGENTKIT_HUB_URL) and AGENTKIT_POOL_TOKEN", file=sys.stderr)
+        return 2
+    config_dirs = args.config_dir or [Path("~/.claude")]
+    for config_dir in config_dirs:
+        if not (config_dir.expanduser() / "projects").is_dir():
+            print(f"{config_dir} has no projects/ directory — nothing to read there", file=sys.stderr)
+
+    while True:
+        since = None if args.all else datetime.now(timezone.utc) - timedelta(days=args.days)
+        found = collect(config_dirs, since)
+        tokens = sum(r["input"] + r["output"] + r["cache_read"] + r["cache_write"] for r in found)
+        window = "everything" if args.all else f"the last {args.days:g} days"
+        print(f"agentkit-usage: {len(found)} message(s), {tokens:,} tokens, over {window}"
+              f" from {', '.join(str(d) for d in config_dirs)}")
+
+        if args.dry_run:
+            for record in found[-5:]:
+                print(f"  {record['ts']}  {record['model'] or '(no model)':22} "
+                      f"in={record['input']:>7,} out={record['output']:>7,} "
+                      f"cache={record['cache_read'] + record['cache_write']:>9,}")
+            if not args.watch:
+                return 0
+        else:
+            written = 0
+            for start in range(0, len(found), BATCH):
+                try:
+                    answer = post(f"{args.hub}/api/capacity/usage", token,
+                                  {"pool": args.pool, "events": found[start:start + BATCH]})
+                except RuntimeError as exc:
+                    print(f"  {exc}", file=sys.stderr)
+                    return 1
+                written += int(answer.get("written") or 0)
+            print(f"  {written} new, {len(found) - written} already recorded")
+            if not args.watch:
+                return 0
+        time.sleep(args.watch)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nstopped")
+        sys.exit(0)
