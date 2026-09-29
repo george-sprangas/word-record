@@ -1,0 +1,114 @@
+# The contract between this repository and the Agent Kit pipeline.
+#
+# Every stage reads this file instead of guessing the stack. Changing it is its
+# own task on its own pull request — the PreToolUse guard refuses edits to it
+# from inside a task stage, deliberately.
+#
+# This repository is NOT the kit's usual Django + React shape. It is a static
+# web app: hand-written ES, CSS and HTML under site/, no build step, no
+# dependencies, no server, no database. Every value below says what that means
+# for the stage that reads it, and the onboarding PR lists each place the
+# templates were adapted and why.
+
+project: word-record
+repo: george-sprangas/word-record
+default_branch: main
+
+# The one command each stage runs. The pipeline never needs to know the stack.
+scripts:
+  bootstrap: scripts/agent/bootstrap.sh
+  verify: scripts/agent/verify.sh
+  qa: scripts/agent/qa.sh
+  seed: scripts/agent/seed.sh
+
+# Where the application lives. There is no Django project and no apps package:
+# apps_root is the directory the whole app is served from.
+stack: static-web
+apps_root: site
+language: javascript
+runtime: browser
+build: none # the files served are the files committed
+
+frontend:
+  root: site
+  source: site/assets
+  build: none
+  dev_url: http://localhost:8000
+  dev_command: python3 -m http.server 8000 -d site
+  login: none # the app has no accounts; all data is local to the device
+  viewports:
+    - desktop 1280x800
+    - mobile 390x844 # the app is mobile-first; this is the important one
+  # One page, several views switched in JS. Every source file maps to "/".
+  routes_map:
+    site/index.html: "/"
+    site/assets/app.js: "/"
+    site/assets/app.css: "/"
+    site/manifest.webmanifest: "/"
+
+# What a stage may touch without asking. A scope in the envelope narrows this;
+# nothing widens it.
+scope:
+  include:
+    - site/
+    - docs/
+    - scripts/
+    - README.md
+  exclude:
+    - .agent-kit/ # vendored copy of the kit; refreshed by the kit's own PR
+    - site/icons/ # binary assets, replaced by a person
+
+limits:
+  review_rounds: 2
+  qa_rounds: 2
+  plan_approval: large # large tasks and protected paths wait for a person
+
+models:
+  plan: claude-opus-5
+  executor: claude-opus-5
+  review: claude-opus-5
+  qa: claude-sonnet-5
+  deploy: claude-sonnet-5
+  security: claude-opus-5 # anything touching recordings, storage or privacy copy
+
+pools:
+  - max-george
+
+deploy:
+  provider: github-pages
+  # One site, therefore one environment. There is no QA URL to smoke before
+  # production; see the onboarding PR for the follow-up task that would add one.
+  environments:
+    production: https://george-sprangas.github.io/word-record/
+  default_policy: prod-on-approval
+  # There is no server and no health endpoint. The deploy check is that the
+  # published page answers 200 and still carries the app shell; scripts/agent/qa.sh
+  # runs the same check against a local server.
+  health_path: /index.html
+  smoke:
+    - GET /index.html returns 200 and contains the app shell (id="view")
+    - GET /assets/app.js returns 200 and declares APP_VERSION
+    - GET /manifest.webmanifest returns 200 and parses as JSON
+  # No runtime, no logs, no metrics: a Pages site cannot be watched the way a
+  # Cloud Run revision can. Rollback is a redeploy of an earlier commit, by hand,
+  # through .github/workflows/rollback.yml.
+  auto_rollback: false
+  watch_window_min: 0
+
+# Checked literally by the Reviewer, every round.
+invariants:
+  - "bash scripts/agent/verify.sh exits 0"
+  - "No build step, no bundler and no runtime dependency is added to site/: the
+    files committed are the files served."
+  - "No recording, transcript or child's name leaves the device: no network call
+    in site/assets/app.js may carry user data (the model download from the
+    transformers.js CDN is the only permitted outbound request)."
+  - "site/manifest.webmanifest parses as JSON and every icon it names exists."
+  - "The UI strings stay Greek, and dictation stays el-GR."
+  - "site/.nojekyll exists (GitHub Pages serves the directory verbatim)."
+
+security_sensitive_paths:
+  - site/assets/app.js # storage, microphone, dictation and the privacy copy
+  - .github/workflows/
+  - .claude/
+  - pipeline.yml

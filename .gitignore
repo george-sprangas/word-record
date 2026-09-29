@@ -1,2 +1,12 @@
 .DS_Store
 node_modules/
+
+# Agent Kit
+# .agentkit/ holds the stage envelope and scratch: committing it would put a run
+# id and a pool in the history of every task.
+.agentkit/
+.env
+.env.*
+# written by scripts/agent/qa.sh on every run
+qa-result.json
+.claude/settings.local.json

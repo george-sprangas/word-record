@@ -1,0 +1,77 @@
+name: Agent Kit orchestrator
+
+# The wake path for repositories the Hub does not wake itself.
+#
+# It does nothing while the repository variable AGENTKIT_WAKES_FROM_HUB is
+# 'true' — which it is whenever the Hub is dispatching stages — so keeping this
+# file costs one skipped job an hour and nothing else. It is here so that a Hub
+# outage, or a phase where this repository runs without one, still has a way for
+# a task to move on.
+#
+# A wake with nothing due is meant to be cheap: one pipeline_state call and out.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task id to wake, e.g. task-12 (empty = sweep every open task)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: agentkit-orchestrator
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    if: vars.AGENTKIT_WAKES_FROM_HUB != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: One orchestrator wake
+        env:
+          TASK: ${{ inputs.task }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENTKIT_POOL_TOKEN: ${{ secrets.AGENTKIT_POOL_TOKEN }}
+          AGENTKIT_HUB_URL: ${{ vars.AGENTKIT_HUB_URL }}
+          CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}/.agent-kit/plugin
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || {
+            echo "CLAUDE_CODE_OAUTH_TOKEN is not set: nothing to wake with." >&2
+            exit 1
+          }
+          git config user.name  "agent-kit[bot]"
+          git config user.email "agent-kit@users.noreply.github.com"
+          if [ -n "${TASK:-}" ]; then
+            prompt="Run /agent-kit:pipeline orchestrate ${TASK}. One wake: decide the single next transition, act, write. If nothing is due, end without writing anything."
+          else
+            prompt="Sweep this repository's open pipeline tasks: for each one with an open task branch, run /agent-kit:pipeline orchestrate <task-id> once. A wake with nothing due ends without writing anything."
+          fi
+          claude -p "$prompt" --permission-mode acceptEdits
