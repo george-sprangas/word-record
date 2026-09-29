@@ -1,0 +1,104 @@
+name: Deploy
+
+# The pipeline's deploy entry point. The Deployer stage triggers this; nobody
+# deploys from a session.
+#
+# Two things about this repository shape it:
+#
+#   * there is one site, so there is one environment. `env: qa` is accepted and
+#     refused with an explanation rather than silently doing a production
+#     deploy — a QA URL would need a second Pages target, which is a task of its
+#     own (see the onboarding PR);
+#   * GitHub Pages will only publish from a job whose environment is
+#     `github-pages`, so the human gate cannot live on the publishing job
+#     itself. The `approval` job below carries `environment: production` and does
+#     nothing else: its required reviewer is what a person approves, and the
+#     publish job waits for it.
+#
+# .github/workflows/pages.yml still publishes on every push to main. Until that
+# trigger is removed, merging IS the production deploy and this workflow is a
+# way to re-publish a chosen ref. The onboarding PR says so plainly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Which environment (only "prod" exists here)
+        required: true
+        default: prod
+        type: choice
+        options: [prod, qa]
+      ref:
+        description: The commit sha to publish (the merge commit, not a branch)
+        required: true
+        type: string
+      task:
+        description: The task id this deploy belongs to, e.g. task-12
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse an environment this repository does not have
+        if: inputs.env != 'prod'
+        run: |
+          echo "This repository publishes one GitHub Pages site, so 'prod' is the"
+          echo "only environment that exists. There is nothing to deploy '${{ inputs.env }}' to."
+          exit 1
+
+  approval:
+    # No steps: this job exists so the `production` environment's required
+    # reviewer has something to approve before anything is published.
+    needs: guard
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://george-sprangas.github.io/word-record/
+    steps:
+      - name: Approved
+        env:
+          REF: ${{ inputs.ref }}
+          TASK: ${{ inputs.task }}
+        run: echo "Publishing ${REF} for ${TASK:-no task}."
+
+  publish:
+    needs: approval
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Smoke the published site
+        env:
+          URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          # Pages needs a moment to serve the new deployment.
+          for _ in $(seq 1 10); do
+            code="$(curl -sS -o /tmp/page -w '%{http_code}' "${URL}index.html" || true)"
+            [ "$code" = "200" ] && break
+            sleep 6
+          done
+          [ "$code" = "200" ] || { echo "health: ${URL}index.html returned ${code}"; exit 1; }
+          grep -q 'id="view"' /tmp/page || { echo "health: the published page has no app shell"; exit 1; }
+          curl -sSf "${URL}assets/app.js" | grep -q 'APP_VERSION' || { echo "health: app.js is not being served"; exit 1; }
+          echo "health: ${URL} is serving the app."

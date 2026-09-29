@@ -1,0 +1,84 @@
+name: Rollback
+
+# Put the site users had ten minutes ago back in front of them.
+#
+# Deliberately NOT behind the production reviewer: deploying new code needs an
+# approval because it puts something untested in front of users; republishing a
+# commit that was already live does not, and a rollback that waits for someone to
+# wake up is not a rollback.
+#
+# It can only publish a ref that already exists — it builds nothing, and there is
+# nothing to build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit sha to publish back (a sha, not a branch)
+        required: true
+        type: string
+      task:
+        description: The task id whose deploy is being undone
+        required: false
+        type: string
+      reason:
+        description: Why — this ends up in the incident issue
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Say what is happening
+        env:
+          REF: ${{ inputs.ref }}
+          TASK: ${{ inputs.task }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          echo "Rolling back to ${REF} (task ${TASK:-none}): ${REASON}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0 # the whole history, so the ancestry check below can answer
+
+      - name: Refuse a ref that is not an ancestor of main
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          git merge-base --is-ancestor "$REF" origin/main || {
+            echo "$REF is not on main: a rollback republishes something that was live, not something new."
+            exit 1
+          }
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Confirm the rolled-back site is serving
+        env:
+          URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          for _ in $(seq 1 10); do
+            code="$(curl -sS -o /tmp/page -w '%{http_code}' "${URL}index.html" || true)"
+            [ "$code" = "200" ] && break
+            sleep 6
+          done
+          [ "$code" = "200" ] || { echo "rollback published but ${URL} returned ${code}"; exit 1; }
+          grep -q 'id="view"' /tmp/page

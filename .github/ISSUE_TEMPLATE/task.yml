@@ -1,0 +1,90 @@
+name: Agent Kit task
+description: Ask the pipeline to change something in the app
+title: "[task] "
+labels: ["agent-task", "pipeline:intake"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This becomes a pipeline task: plan → execute → review → QA → deploy, all on one
+        branch and one PR. Nothing is merged or published without a person approving it.
+
+        The app is a static site with no backend, and every recording and word the
+        app holds lives on the therapist's own device. Say so here if a change comes
+        anywhere near that.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+      description: The outcome, in the words of someone using the app — not the implementation.
+      placeholder: When a word is marked Σωστό, the next word should not open automatically.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What is wrong or missing today, and who it affects.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: |
+        One per line, each provable by clicking or by a check. QA marks each one met or
+        not met and shows the evidence.
+      placeholder: |
+        - Marking a word Σωστό leaves the session on that word
+        - The progress count still goes up
+        - Works on iOS Safari in Μόνο ήχος mode
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      description: |
+        small = one function or one bit of copy · medium = one screen or one feature ·
+        large = touches storage, recording, dictation or privacy. Large tasks wait for
+        a person to approve the plan. Leave it blank to let the Planner decide.
+      options:
+        - small
+        - medium
+        - large
+    validations:
+      required: false
+
+  - type: dropdown
+    id: ui_change
+    attributes:
+      label: Does this change the UI?
+      description: If yes, QA captures before/after screenshots at phone and desktop widths.
+      options:
+        - "yes"
+        - "no"
+    validations:
+      required: true
+
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices this must work on
+      description: |
+        Recording and dictation behave differently per browser. Name the ones that matter
+        for this change — iPhone/Safari is usually one of them.
+      placeholder: iPhone 13, Safari, Μόνο ήχος mode; Chrome on Android
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Screenshots, a recording that reproduces it, the error code the app copied.
+    validations:
+      required: false
