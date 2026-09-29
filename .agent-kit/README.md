@@ -1,6 +1,6 @@
 # agent-kit, vendored
 
-A copy of `plugin/` from george-sprangas/agent-kit at `624a0e6`.
+A copy of `plugin/` from george-sprangas/agent-kit at `5820dc1`.
 
 Do not edit here: changes go to the kit, and this copy is refreshed with
 `python3 scripts/vendor_plugin.py <this repo>` from a kit checkout, on a
