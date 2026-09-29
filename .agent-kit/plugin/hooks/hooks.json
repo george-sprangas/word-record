@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/session_start.sh",
+            "timeout": 900,
+            "statusMessage": "Agent Kit: reading the project contract"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_pretooluse.py",
+            "timeout": 20,
+            "statusMessage": "Agent Kit: guard"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/secret_scan.py",
+            "timeout": 45,
+            "statusMessage": "Agent Kit: secret scan"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/verify_gate.sh",
+            "timeout": 1800,
+            "statusMessage": "Agent Kit: verification gate"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/ledger_append.py --hook stop",
+            "timeout": 30,
+            "statusMessage": "Agent Kit: ledger check"
+          }
+        ]
+      }
+    ]
+  }
+}

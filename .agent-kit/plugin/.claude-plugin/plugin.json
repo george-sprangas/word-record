@@ -1,0 +1,22 @@
+{
+  "name": "agent-kit",
+  "displayName": "Agent Kit",
+  "version": "0.1.0",
+  "description": "Repo-agnostic delivery pipeline: intake, plan, execute, review, QA, gated deploy, monitor, evaluate. Every stage writes a git-committed ledger and a PR status comment.",
+  "author": {
+    "name": "Sprangas Studio",
+    "url": "https://github.com/george-sprangas"
+  },
+  "homepage": "https://github.com/george-sprangas/agent-kit",
+  "repository": "https://github.com/george-sprangas/agent-kit",
+  "license": "MIT",
+  "keywords": [
+    "pipeline",
+    "review",
+    "qa",
+    "deploy",
+    "django",
+    "react",
+    "cloud-run"
+  ]
+}

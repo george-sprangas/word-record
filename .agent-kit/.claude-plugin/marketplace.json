@@ -1,0 +1,17 @@
+{
+  "name": "agent-kit",
+  "description": "The Agentic Delivery Pipeline: agents that plan, build, review, QA, deploy behind a human gate, monitor and improve themselves — scheduled against your subscription's usage windows.",
+  "owner": {
+    "name": "Sprangas Studio",
+    "url": "https://github.com/george-sprangas/agent-kit"
+  },
+  "plugins": [
+    {
+      "name": "agent-kit",
+      "source": "./plugin",
+      "description": "Agentic delivery pipeline: plan, build, review, QA, gated deploy, monitor, evaluate — repo-agnostic.",
+      "version": "0.1.0",
+      "category": "workflow"
+    }
+  ]
+}
